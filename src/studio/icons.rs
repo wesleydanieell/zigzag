@@ -6,6 +6,9 @@ use eframe::egui::{Color32, Painter, Pos2, Rect, Shape, Stroke, Vec2, epaint::Cu
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Icon {
     Select,
+    /// Machine-command boundary: arrow entering / leaving a vertical bar.
+    CommandStart,
+    CommandEnd,
     /// Illustrator's white arrow: an outline arrow with a point square.
     Direct,
     Hand,
@@ -241,6 +244,21 @@ pub fn paint(p: &Painter, r: Rect, icon: Icon, c: Color32) {
     };
     use std::f32::consts::PI;
     match icon {
+        Icon::CommandStart | Icon::CommandEnd => {
+            let bar = if icon == Icon::CommandStart {
+                0.75
+            } else {
+                0.25
+            };
+            line(&[(bar, 0.12), (bar, 0.88)]);
+            let (from, to) = if icon == Icon::CommandStart {
+                (0.08, 0.58)
+            } else {
+                (0.42, 0.92)
+            };
+            line(&[(from, 0.5), (to, 0.5)]);
+            line(&[(to - 0.2, 0.28), (to, 0.5), (to - 0.2, 0.72)]);
+        }
         Icon::Select => {
             closed(
                 &[

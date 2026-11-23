@@ -3910,7 +3910,15 @@ impl Studio {
                 ui.push_id(("sequence-object", k, shape.uid), |ui| {
                     ui.horizontal(|ui| {
                         ui.add_space(20.0);
-                        let response = ui.selectable_label(selected.contains(&i), &name);
+                        let name_width =
+                            (ui.available_width() - 48.0 - 2.0 * ui.spacing().item_spacing.x)
+                                .max(0.0);
+                        let response = ui
+                            .add_sized(
+                                [name_width, 24.0],
+                                egui::Button::selectable(selected.contains(&i), &name).truncate(),
+                            )
+                            .on_hover_text(&name);
                         response.widget_info(|| {
                             egui::WidgetInfo::selected(
                                 egui::Role::Button,
@@ -3922,9 +3930,6 @@ impl Studio {
                         if response.clicked() {
                             pick = Some(vec![i]);
                         }
-                    });
-                    ui.horizontal(|ui| {
-                        ui.add_space(28.0);
                         start_command_ui(ui, &mut shape.params);
                         end_command_ui(ui, &mut shape.params);
                     });
@@ -4249,22 +4254,14 @@ fn eye_and_lock(
 fn start_command_ui(ui: &mut egui::Ui, params: &mut zigzag::params::Params) {
     use zigzag::params::StartCommand::*;
     let current = params.start_command();
-    egui::ComboBox::from_id_salt("start-command")
-        .selected_text(format!(
-            "Start: {}",
-            if current == Trim { "Trim" } else { "Auto" }
-        ))
-        .width(88.0)
-        .truncate()
-        .show_ui(ui, |ui| {
-            for (value, label) in [(Automatic, "Auto"), (Trim, "Trim")] {
-                if ui.selectable_label(current == value, label).clicked() {
-                    params.set_start_command(value);
-                }
-            }
-        })
-        .response
-        .on_hover_text("Start command: cut before this object, or Auto to let routing decide");
+    command_menu(
+        ui,
+        Icon::CommandStart,
+        "Start command",
+        current,
+        &[(Automatic, "Auto"), (Trim, "Trim")],
+        |value| params.set_start_command(value),
+    );
 }
 
 fn end_command_ui(ui: &mut egui::Ui, params: &mut zigzag::params::Params) {
@@ -4276,20 +4273,50 @@ fn end_command_ui(ui: &mut egui::Ui, params: &mut zigzag::params::Params) {
         (TrimAndStop, "Trim + Stop"),
     ];
     let current = params.end_command();
+    command_menu(
+        ui,
+        Icon::CommandEnd,
+        "End command",
+        current,
+        &choices,
+        |value| params.set_end_command(value),
+    );
+}
+
+/// The first choice is Auto. Showing a menu never normalizes legacy overrides.
+fn command_menu<T: Copy + PartialEq>(
+    ui: &mut egui::Ui,
+    icon: Icon,
+    slot: &str,
+    current: T,
+    choices: &[(T, &str)],
+    mut set: impl FnMut(T),
+) {
     let label = choices.iter().find(|(v, _)| *v == current).unwrap().1;
-    egui::ComboBox::from_id_salt("end-command")
-        .selected_text(format!("End: {label}"))
-        .width(108.0)
-        .truncate()
-        .show_ui(ui, |ui| {
-            for (value, label) in choices {
-                if ui.selectable_label(current == value, label).clicked() {
-                    params.set_end_command(value);
-                }
+    let response = theme::icon_button(
+        ui,
+        icon,
+        &format!("{slot}: {label}"),
+        current != choices[0].0,
+        24.0,
+    );
+    if response.has_focus() {
+        ui.painter().rect_stroke(
+            response.rect.shrink(1.0),
+            6.0,
+            ui.visuals().selection.stroke,
+            egui::StrokeKind::Inside,
+        );
+    }
+    egui::Popup::menu(&response).show(|ui| {
+        ui.set_min_width(120.0);
+        for &(value, label) in choices {
+            if ui.selectable_label(current == value, label).clicked() {
+                set(value);
+                ui.close();
             }
-        })
-        .response
-        .on_hover_text("End command: cut and/or pause after this object; Auto clears overrides. Stop exports as a same-thread block change; machine behavior depends on format.");
+        }
+    });
 }
 
 #[cfg(test)]
@@ -4384,6 +4411,53 @@ mod tests {
             h.state().doc.shapes[1].params.start_command(),
             StartCommand::Trim
         );
+    }
+
+    #[test]
+    fn command_icons_fit_narrow_rows_and_support_keyboard_menus() {
+        use zigzag::params::{EndCommand, Params, StartCommand};
+        for width in [200.0, 260.0, 420.0] {
+            for dark in [false, true] {
+                let mut h = Harness::builder()
+                    .with_size(Vec2::new(width, 300.0))
+                    .build_ui_state(
+                        |ui, params: &mut Params| {
+                            ui.ctx().set_visuals(if dark {
+                                egui::Visuals::dark()
+                            } else {
+                                egui::Visuals::light()
+                            });
+                            ui.horizontal(|ui| {
+                                start_command_ui(ui, params);
+                                end_command_ui(ui, params);
+                            });
+                        },
+                        Params::default(),
+                    );
+                h.run_steps(3);
+                let start = h.get_by_label("Start command: Auto").rect();
+                let end = h.get_by_label("End command: Auto").rect();
+                assert_eq!(start.center().y, end.center().y);
+                assert!(start.right() <= end.left() && end.right() <= width);
+                h.key_press(egui::Key::Tab);
+                h.key_press(egui::Key::Enter);
+                h.run_steps(2);
+                h.get_by_label("Trim").click();
+                h.run_steps(2);
+                assert_eq!(h.state().start_command(), StartCommand::Trim);
+                h.get_by_label("End command: Auto").click();
+                h.run_steps(2);
+                h.get_by_label("Stop").click();
+                h.run_steps(2);
+                assert_eq!(h.state().end_command(), EndCommand::Stop);
+                h.get_by_label("End command: Stop").click();
+                h.run_steps(2);
+                h.key_press(egui::Key::Escape);
+                h.run_steps(2);
+                assert!(h.query_by_label("Trim + Stop").is_none());
+                assert_eq!(h.state().end_command(), EndCommand::Stop);
+            }
+        }
     }
 
     fn dirs_with(os: Os, vars: &[(&str, &str)]) -> Option<(PathBuf, Vec<PathBuf>)> {
