@@ -29,6 +29,15 @@
       "tested": false
     },
     {
+      "id": "brother-bp1530l",
+      "name": "Brother Innov-is BP1530L",
+      "hoops": ["160x260", "130x180", "100x100"],
+      "default_hoop": "160x260",
+      "format": "pes",
+      "source": "Brother Brasil BP1530LBRDV official product page (https://www.brother.com.br/products/bp1530lbrdv): included 26 x 16 cm, 18 x 13 cm, and 10 x 10 cm hoops; Brother Mexico BP1530L brochure (https://www.brother.com.mx/-/media/brother/product-catalog-media/documents/2022/05/24/12/39/brochure-bp1530l-mx.pdf): PES and DST formats. PES selected as default; DST remains a separate export choice.",
+      "tested": false
+    },
+    {
       "id": "brother-pr",
       "name": "Brother PR (6-needle)",
       "hoops": ["200x300", "130x180", "100x100", "40x60"],

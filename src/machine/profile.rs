@@ -313,6 +313,28 @@ mod tests {
     }
 
     #[test]
+    fn brother_bp1530l_uses_its_hoops_and_pes_by_default() {
+        let p = builtin_named("brother-bp1530l").expect("Brother BP1530L is a built-in profile");
+        assert_eq!(p.name, "Brother Innov-is BP1530L");
+        assert_eq!(p.hoops, [(160.0, 260.0), (130.0, 180.0), (100.0, 100.0)]);
+        assert_eq!(p.default_hoop, (160.0, 260.0));
+        assert_eq!(p.format, Some("pes"));
+        assert!(!p.tested, "not yet tested on a physical BP1530L");
+
+        let mut settings = Settings::default();
+        p.apply(&mut settings, false);
+        assert_eq!(settings.machine.as_deref(), Some("brother-bp1530l"));
+        assert_eq!(settings.hoop, (160.0, 260.0));
+
+        settings.hoop = (130.0, 180.0);
+        p.apply(&mut settings, true);
+        assert_eq!(settings.hoop, (130.0, 180.0));
+        settings.hoop = (200.0, 200.0);
+        p.apply(&mut settings, true);
+        assert_eq!(settings.hoop, (160.0, 260.0));
+    }
+
+    #[test]
     fn a_machine_round_trips_and_bad_ones_are_left_out() {
         let mut p = Profile::new(slug("Shop's Melco #2"), " Shop's Melco #2 ", (300.0, 210.5));
         assert_eq!(p.id, "shop-s-melco-2");
