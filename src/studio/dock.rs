@@ -2131,7 +2131,8 @@ impl Studio {
             Some(side) => {
                 let h = self.dock_ui.column_h[side.side()];
                 if self.panels_in(side).len() > 1 {
-                    (rows.len().max(3) as f32 * 26.0 + 8.0).clamp(110.0, (h * 0.36).max(110.0))
+                    (rows.len().max(3) as f32 * theme::ROW_H + theme::space::S)
+                        .clamp(110.0, (h * 0.36).max(110.0))
                 } else {
                     (h - 20.0 - 26.0 - 64.0).max(120.0)
                 }
@@ -2163,7 +2164,7 @@ impl Studio {
         let mut renamed: Option<Option<(usize, String)>> = None;
         // Only the rows in view are laid out and painted (a traced design
         // has hundreds; each row is text, an icon and a hover check).
-        const ROW: f32 = 26.0;
+        const ROW: f32 = theme::ROW_H;
         // An eye or a lock clicked: whose, which, and with Option held
         // (then it's everything else's).
         let mut flag_click: Option<(Vec<usize>, Flag, bool)> = None;
@@ -2201,12 +2202,13 @@ impl Studio {
                 for row in &rows[range] {
                     let (i, depth) = match row {
                         ObjRow::Group { id, depth, members } => {
-                            let indent = *depth as f32 * 14.0 + GUTTER;
+                            let indent = *depth as f32 * LAYER_DEPTH_STEP + GUTTER;
                             let (rect, resp) = ui.allocate_exact_size(
                                 Vec2::new(ui.available_width(), ROW),
                                 Sense::click_and_drag(),
                             );
                             let body = row_body(rect);
+                            let columns = layer_columns(rect, *depth);
                             let gutter = gutter_flag(rect, resp.interact_pointer_pos());
                             // Dragged: the group's layers go (with the rest
                             // of the selection, when they're all in it).
@@ -2235,7 +2237,11 @@ impl Studio {
                                 drop = Some(if q.y < rect.center().y {
                                     (above, rect.top(), rect.left() + indent)
                                 } else if open {
-                                    (above, rect.bottom(), rect.left() + indent + 14.0)
+                                    (
+                                        above,
+                                        rect.bottom(),
+                                        rect.left() + indent + LAYER_DEPTH_STEP,
+                                    )
                                 } else {
                                     (below, rect.bottom(), rect.left() + indent)
                                 });
@@ -2286,8 +2292,8 @@ impl Studio {
                             crate::shape_thumbnail::paint(
                                 painter,
                                 Rect::from_center_size(
-                                    Pos2::new(rect.left() + indent + 28.0, rect.center().y),
-                                    Vec2::splat(22.0),
+                                    columns.preview.center(),
+                                    columns.preview.size(),
                                 ),
                                 &members
                                     .iter()
@@ -2299,26 +2305,25 @@ impl Studio {
                                 .iter()
                                 .map(|&m| self.design.per_shape.get(m).copied().unwrap_or(0))
                                 .sum();
-                            let right = rect.right() - 8.0;
+                            let right = columns.count.right();
                             let galley = painter.layout_no_wrap(
                                 fmt_int(stitches),
                                 egui::FontId::proportional(11.0),
                                 fg2,
                             );
                             let cw = galley.size().x;
-                            painter.galley(
-                                Pos2::new(right - cw, rect.center().y - galley.size().y / 2.0),
-                                galley,
-                                fg2,
-                            );
-                            let name_rect = Rect::from_min_max(
-                                Pos2::new(rect.left() + indent + 40.0, rect.top()),
-                                Pos2::new(right - cw - 6.0, rect.bottom()),
-                            );
+                            painter
+                                .with_clip_rect(columns.count.intersect(ui.clip_rect()))
+                                .galley(
+                                    Pos2::new(right - cw, rect.center().y - galley.size().y / 2.0),
+                                    galley,
+                                    fg2,
+                                );
+                            let name_rect = Rect::from_min_max(columns.name.min, columns.name.max);
                             painter.with_clip_rect(name_rect).text(
                                 Pos2::new(name_rect.left(), rect.center().y),
                                 egui::Align2::LEFT_CENTER,
-                                format!("{label}  ·  {}", members.len()),
+                                &label,
                                 egui::FontId::proportional(13.0),
                                 fg,
                             );
@@ -2348,7 +2353,7 @@ impl Studio {
                         }
                         ObjRow::Item { i, depth } => (*i, *depth),
                     };
-                    let indent = depth as f32 * 14.0 + GUTTER;
+                    let indent = depth as f32 * LAYER_DEPTH_STEP + GUTTER;
                     let (kind, color, hidden, locked) = {
                         let s = &self.doc.shapes[i];
                         (
@@ -2380,6 +2385,7 @@ impl Studio {
                     });
                     let painter = ui.painter();
                     let body = row_body(rect);
+                    let columns = layer_columns(rect, depth);
                     let gutter = gutter_flag(rect, resp.interact_pointer_pos());
                     eye_and_lock(painter, rect, resp.hover_pos(), hidden, locked, &p);
                     if selected {
@@ -2405,10 +2411,7 @@ impl Studio {
                         5.5,
                         Stroke::new(1.0, Color32::from_black_alpha(50)),
                     );
-                    let icon = Rect::from_center_size(
-                        Pos2::new(rect.left() + indent + 30.0, rect.center().y),
-                        Vec2::splat(22.0),
-                    );
+                    let icon = columns.preview;
                     crate::shape_thumbnail::paint(painter, icon, &[&self.doc.shapes[i]], false);
                     // (Off, or hidden: dimmed, and saying which.)
                     let name_color = if kind == Kind::Skip || hidden {
@@ -2416,7 +2419,7 @@ impl Studio {
                     } else {
                         fg
                     };
-                    let right = rect.right() - 8.0;
+                    let right = columns.count.right();
                     let count_text = if hidden {
                         "hidden".to_string()
                     } else if kind == Kind::Skip {
@@ -2427,13 +2430,15 @@ impl Studio {
                     let galley =
                         painter.layout_no_wrap(count_text, egui::FontId::proportional(11.0), fg2);
                     let cw = galley.size().x;
-                    painter.galley(
-                        Pos2::new(right - cw, rect.center().y - galley.size().y / 2.0),
-                        galley,
-                        fg2,
-                    );
+                    painter
+                        .with_clip_rect(columns.count.intersect(ui.clip_rect()))
+                        .galley(
+                            Pos2::new(right - cw, rect.center().y - galley.size().y / 2.0),
+                            galley,
+                            fg2,
+                        );
                     let warn = warned.contains(&i);
-                    let mut name_right = right - cw - 6.0;
+                    let mut name_right = columns.name.right();
                     if warn {
                         let wr = Rect::from_center_size(
                             Pos2::new(name_right - 6.0, rect.center().y),
@@ -2448,8 +2453,8 @@ impl Studio {
                         name_right -= 16.0;
                     }
                     let name_rect = Rect::from_min_max(
-                        Pos2::new(rect.left() + indent + 42.0, rect.top()),
-                        Pos2::new(name_right, rect.bottom()),
+                        columns.name.min,
+                        Pos2::new(name_right.max(columns.name.left()), rect.bottom()),
                     );
                     let uid = self.doc.shapes[i].uid;
                     let editing = self.renaming.as_ref().is_some_and(|r| r.0 == uid);
@@ -4458,6 +4463,40 @@ pub(crate) fn connect_note(connect_mm: f64, cuts: usize, bridged: usize) -> Stri
 const FLAG_COL: f32 = 18.0;
 const GUTTER: f32 = 2.0 * FLAG_COL + 2.0;
 
+// Shared artwork and text columns for every Layers row. Keep hierarchy separate
+// from the fixed eye/lock gutter and the right-aligned secondary count.
+const LAYER_DEPTH_STEP: f32 = 2.0 * theme::space::S;
+const LAYER_PREVIEW_SIZE: f32 = theme::ROW_H - theme::space::XS;
+const LAYER_COUNT_WIDTH: f32 = 3.0 * theme::space::M;
+
+struct LayerColumns {
+    preview: Rect,
+    name: Rect,
+    count: Rect,
+}
+
+fn layer_columns(row: Rect, depth: usize) -> LayerColumns {
+    let leading = row.left() + GUTTER + depth as f32 * LAYER_DEPTH_STEP;
+    let preview = Rect::from_center_size(
+        Pos2::new(leading + 34.0, row.center().y),
+        Vec2::splat(LAYER_PREVIEW_SIZE),
+    );
+    let count = Rect::from_min_max(
+        Pos2::new(row.right() - theme::space::S - LAYER_COUNT_WIDTH, row.top()),
+        Pos2::new(row.right() - theme::space::S, row.bottom()),
+    );
+    let left = preview.right() + theme::space::S;
+    let name = Rect::from_min_max(
+        Pos2::new(left, row.top()),
+        Pos2::new((count.left() - theme::space::S).max(left), row.bottom()),
+    );
+    LayerColumns {
+        preview,
+        name,
+        count,
+    }
+}
+
 /// The part of a row to the right of its eye and lock.
 fn row_body(row: Rect) -> Rect {
     Rect::from_min_max(Pos2::new(row.left() + GUTTER, row.top()), row.max)
@@ -4584,6 +4623,26 @@ mod tests {
     use super::*;
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable;
+
+    #[test]
+    fn layers_columns_keep_artwork_names_and_counts_apart() {
+        for width in [200.0, 260.0, 420.0] {
+            for depth in 0..=2 {
+                let row =
+                    Rect::from_min_size(Pos2::new(8.0, 8.0), Vec2::new(width - 16.0, theme::ROW_H));
+                let columns = layer_columns(row, depth);
+                assert_eq!(columns.preview.size(), Vec2::splat(20.0));
+                assert!(columns.name.left() - columns.preview.right() >= theme::space::XS);
+                assert!(columns.name.right() <= columns.count.left() - theme::space::S);
+                assert_eq!(columns.count.right(), row.right() - theme::space::S);
+                assert!(row.contains_rect(columns.preview));
+                assert!(row.contains_rect(columns.name));
+                let nested = layer_columns(row, depth + 1);
+                assert_eq!(nested.preview.left() - columns.preview.left(), 16.0);
+                assert_eq!(nested.name.left() - columns.name.left(), 16.0);
+            }
+        }
+    }
 
     #[test]
     fn layers_paint_object_and_composite_geometry_in_both_themes() {
