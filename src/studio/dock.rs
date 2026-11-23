@@ -3827,20 +3827,34 @@ impl Studio {
         let selected = self.sel_indices();
         let mut pick = None;
         let mut picker = None;
-        for (k, blk) in self.design.blocks.iter().enumerate() {
-            let n: usize = blk.runs.iter().map(|r| r.pts.len()).sum();
-            let stop = k > 0 && self.design.blocks[k - 1].color == blk.color;
-            let mut seen = std::collections::HashSet::new();
-            let objects: Vec<_> = self
-                .design
-                .block_shapes
-                .get(k)
-                .into_iter()
-                .flatten()
+        let advanced = !self.view_tools.thread_order;
+        let groups =
+            crate::threads::color_runs(&self.design.blocks, &self.design.block_shapes, advanced);
+        for (k, group) in groups.iter().enumerate() {
+            let n = group.stitches;
+            let stop = !advanced && k > 0 && groups[k - 1].color == group.color;
+            let objects: Vec<_> = group
+                .objects
+                .iter()
                 .copied()
-                .filter(|i| seen.insert(*i))
+                .filter(|&i| {
+                    self.doc
+                        .shapes
+                        .get(i)
+                        .is_some_and(|s| !s.params.hidden() && s.params.kind != Some(Kind::Skip))
+                })
                 .collect();
-            let singleton = objects.len() == 1;
+            let singleton = !advanced && objects.len() == 1;
+            // A Stop may split planned blocks, but never this visual run's identity.
+            let run_id = ui.make_persistent_id((
+                "advanced-color-run",
+                objects.first().map(|&i| self.doc.shapes[i].uid),
+                group.color,
+            ));
+            let mut expanded = ui
+                .ctx()
+                .data_mut(|d| d.get_persisted::<bool>(run_id))
+                .unwrap_or(true);
             let (row, _) = ui.allocate_exact_size(
                 Vec2::new(ui.available_width(), theme::ROW_H.max(24.0)),
                 Sense::hover(),
@@ -3858,6 +3872,31 @@ impl Studio {
             } else {
                 Rect::from_min_max(Pos2::new(rect.left() + 40.0, rect.top()), rect.max)
             };
+            if advanced {
+                let disclosure = Rect::from_min_size(rect.min, Vec2::new(18.0, rect.height()));
+                let response = ui.interact(disclosure, run_id.with("disclosure"), Sense::click());
+                response.widget_info(|| {
+                    egui::WidgetInfo::labeled(
+                        egui::Role::Button,
+                        true,
+                        format!("Toggle color group {}", k + 1),
+                    )
+                });
+                if response.clicked() {
+                    expanded = !expanded;
+                    ui.ctx().data_mut(|d| d.insert_persisted(run_id, expanded));
+                }
+                icons::paint(
+                    ui.painter(),
+                    disclosure.shrink(4.0),
+                    if expanded {
+                        Icon::ChevronDown
+                    } else {
+                        Icon::ChevronRight
+                    },
+                    p.secondary,
+                );
+            }
             let resp = ui.interact(
                 pass_target,
                 ui.make_persistent_id(("sequence-pass", k)),
@@ -3885,14 +3924,16 @@ impl Studio {
                 Sense::click(),
             );
             let painter = ui.painter();
-            painter.text(
-                Pos2::new(rect.left() + 4.0, rect.center().y),
-                egui::Align2::LEFT_CENTER,
-                format!("{}", k + 1),
-                egui::FontId::proportional(11.0),
-                p.secondary,
-            );
-            painter.rect_filled(sw, 3.0, crate::canvas::color32(blk.color));
+            if !advanced {
+                painter.text(
+                    Pos2::new(rect.left() + 4.0, rect.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    format!("{}", k + 1),
+                    egui::FontId::proportional(11.0),
+                    p.secondary,
+                );
+            }
+            painter.rect_filled(sw, 3.0, crate::canvas::color32(group.color));
             painter.rect_stroke(
                 sw,
                 3.0,
@@ -3906,15 +3947,28 @@ impl Studio {
                 ),
                 egui::StrokeKind::Inside,
             );
-            let (_, name, number) = crate::threads::nearest(self.view_tools.brand, blk.color);
+            let (_, name, number) = crate::threads::nearest(self.view_tools.brand, group.color);
             let name = crate::threads::label(name, number);
             let label = if stop {
                 format!("{name} (stop)")
             } else {
                 name.clone()
             };
+            let preview_space = if advanced { 20.0 } else { 0.0 };
+            if advanced {
+                let preview = Rect::from_center_size(
+                    Pos2::new(sw.right() + 12.0, rect.center().y),
+                    Vec2::splat(14.0),
+                );
+                painter.rect_stroke(
+                    preview,
+                    2.0,
+                    Stroke::new(1.0, p.control_border),
+                    egui::StrokeKind::Inside,
+                );
+            }
             let label_rect = Rect::from_min_max(
-                Pos2::new(sw.right() + theme::space::S, rect.top()),
+                Pos2::new(sw.right() + theme::space::S + preview_space, rect.top()),
                 Pos2::new(
                     rect.right()
                         - if singleton {
@@ -3929,7 +3983,10 @@ impl Studio {
             );
             if !singleton || header_width > 40.0 {
                 painter.with_clip_rect(label_rect).text(
-                    Pos2::new(sw.right() + theme::space::S, rect.center().y),
+                    Pos2::new(
+                        sw.right() + theme::space::S + preview_space,
+                        rect.center().y,
+                    ),
                     egui::Align2::LEFT_CENTER,
                     if singleton { &label } else { &name },
                     egui::FontId::proportional(12.0),
@@ -3976,7 +4033,7 @@ impl Studio {
                 pick = Some(if global_color {
                     self.design_threads()
                         .into_iter()
-                        .find(|(color, _, _)| *color == blk.color)
+                        .find(|(color, _, _)| *color == group.color)
                         .map(|(_, objects, _)| objects)
                         .unwrap_or_default()
                 } else {
@@ -3992,6 +4049,9 @@ impl Studio {
                 .clicked()
             {
                 pick = Some(objects.clone());
+            }
+            if advanced && !expanded {
+                continue;
             }
             // block_shapes is the planner's execution order, not the Layers stack.
             for i in objects {
@@ -4014,7 +4074,12 @@ impl Studio {
                         .allocate_exact_size(Vec2::new(ui.available_width(), 24.0), Sense::hover());
                     Rect::from_min_max(Pos2::new(r.left() + 20.0, r.top()), r.max)
                 };
-                ui.push_id(("sequence-object", k, shape.uid), |ui| {
+                let row_key = if advanced {
+                    run_id
+                } else {
+                    ui.scope_id().with(k)
+                };
+                ui.push_id(("sequence-object", row_key, shape.uid), |ui| {
                     ui.scope_builder(egui::UiBuilder::new().max_rect(object_row), |ui| {
                         ui.set_clip_rect(ui.clip_rect().intersect(object_row));
                         let spacing = ui.spacing().item_spacing.x;
@@ -4959,7 +5024,7 @@ mod tests {
                     assert_eq!(pass.center().y, swatch.center().y);
                     assert_eq!(object.center().y, start.center().y);
                     assert_eq!(object.center().y, end.center().y);
-                    if grouped {
+                    if grouped || by_color {
                         assert!(pass.bottom() <= object.top());
                     } else {
                         assert_eq!(pass.center().y, object.center().y);

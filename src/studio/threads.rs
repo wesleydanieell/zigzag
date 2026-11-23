@@ -11,6 +11,40 @@ use zigzag::formats::jef_data::JEF_PALETTE;
 use zigzag::formats::pec_data::PEC_PALETTE;
 use zigzag::params::Kind;
 
+/// Presentation only: adjacent equal-RGB passes form one ordered color run.
+/// Object indices are deduplicated in first-sewn order, including across Stops.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ColorRun {
+    pub color: [u8; 3],
+    pub objects: Vec<usize>,
+    pub stitches: usize,
+}
+
+pub(crate) fn color_runs(
+    blocks: &[zigzag::design::Block],
+    block_shapes: &[Vec<usize>],
+    merge: bool,
+) -> Vec<ColorRun> {
+    let mut groups: Vec<ColorRun> = Vec::new();
+    for (k, block) in blocks.iter().enumerate() {
+        if !merge || groups.last().is_none_or(|g| g.color != block.color) {
+            groups.push(ColorRun {
+                color: block.color,
+                objects: Vec::new(),
+                stitches: 0,
+            });
+        }
+        let group = groups.last_mut().unwrap();
+        group.stitches += block.runs.iter().map(|r| r.pts.len()).sum::<usize>();
+        for &i in block_shapes.get(k).into_iter().flatten() {
+            if !group.objects.contains(&i) {
+                group.objects.push(i);
+            }
+        }
+    }
+    groups
+}
+
 /// Thread charts we have real data for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum Brand {
@@ -599,6 +633,86 @@ mod tests {
     }
 
     #[test]
+    fn color_runs_merge_only_adjacent_rgb_and_deduplicate_in_order() {
+        use zigzag::design::Block;
+        let a = [170, 0, 0];
+        let b = [0, 170, 0];
+        let blocks: Vec<_> = [a, a, b, a]
+            .into_iter()
+            .map(|color| Block {
+                color,
+                runs: vec![],
+            })
+            .collect();
+        let objects = vec![vec![0, 0], vec![0, 1, 1], vec![2], vec![3]];
+        let groups = color_runs(&blocks, &objects, true);
+        assert_eq!(
+            groups.iter().map(|g| g.objects.clone()).collect::<Vec<_>>(),
+            vec![vec![0, 1], vec![2], vec![3]]
+        );
+        assert_eq!(color_runs(&blocks, &objects, false).len(), 4);
+        assert_eq!(
+            color_runs(&blocks[..1], &objects[..1], true)[0].objects,
+            vec![0]
+        );
+    }
+
+    #[test]
+    fn advanced_singleton_parent_and_expansion_survive_stop_and_undo() {
+        for count in [1, 2] {
+            let mut h = studio();
+            let paths = (0..count).map(|i| format!(r##"<path id="object{i}_run" d="M0 {i} L10 {i}" stroke="#aa0000" fill="none"/>"##)).collect::<String>();
+            let svg = format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="20mm" height="20mm" viewBox="0 0 20 20">{paths}</svg>"#
+            );
+            h.state_mut()
+                .set_document(zigzag::document::Document::from_svg(&svg, "groups", None).unwrap());
+            if h.state().dock.visible(crate::dock::PanelId::Stitch) {
+                h.state_mut().dock.toggle(crate::dock::PanelId::Stitch);
+            }
+            h.state_mut().view_tools.thread_order = false;
+            h.state_mut().view_tools.thread_advanced = true;
+            h.run_steps(5);
+            let parent = h.get_by_label("1 Red (800)").rect();
+            assert!(parent.bottom() <= h.get_by_label("Select sewn object object0").rect().top());
+            assert_eq!(
+                h.query_all_by_label_contains("Select sewn object object")
+                    .count(),
+                count
+            );
+            h.get_by_label("1 Red (800)").click();
+            h.run_steps(2);
+            assert_eq!(h.state().sel_indices(), (0..count).collect::<Vec<_>>());
+            h.query_all_by_label("End command: Auto")
+                .next()
+                .unwrap()
+                .click();
+            h.run_steps(2);
+            h.get_by_label("Stop").click();
+            h.run_steps(4);
+            assert!(h.query_by_label("End command: Stop").is_some());
+            assert_eq!(
+                h.query_all_by_label_contains("Toggle color group").count(),
+                1
+            );
+            h.get_by_label("Toggle color group 1").focus();
+            h.key_press(egui::Key::Space);
+            h.run_steps(2);
+            assert!(h.query_by_label("Select sewn object object0").is_none());
+            assert!(
+                !h.state_mut()
+                    .run_tool("undo", &serde_json::json!({}))
+                    .is_error
+            );
+            h.run_steps(4);
+            assert!(h.query_by_label("Select sewn object object0").is_none());
+            h.get_by_label("Toggle color group 1").click();
+            h.run_steps(2);
+            assert_eq!(h.query_all_by_label("End command: Auto").count(), count);
+        }
+    }
+
+    #[test]
     fn the_threads_panel_lists_sewing_order_or_colors() {
         let mut h = studio();
         assert!(h.state().view_tools.thread_order, "sewing order first");
@@ -683,7 +797,10 @@ mod tests {
             h.state_mut().view_tools.thread_order = order;
             h.run_steps(3);
             assert_eq!(h.state().design.blocks.len(), 2);
-            assert!(h.query_by_label_contains("(stop)").is_some());
+            if order {
+                assert!(h.query_by_label_contains("(stop)").is_some());
+            }
+            assert!(h.query_by_label("End command: Trim + Stop").is_some());
             assert_eq!(
                 h.state()
                     .doc
