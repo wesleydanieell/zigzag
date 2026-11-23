@@ -2,11 +2,11 @@
 //! changes and trims), with pass or global color editing, and real thread
 //! charts to pick from.
 
-pub use zigzag::formats::charts::brother_number;
-use zigzag::formats::charts::BROTHER_NUMBERS;
 use crate::app::Studio;
 use crate::theme::{caption, pal_ui};
 use eframe::egui::{self, Color32, Sense, Stroke, Vec2};
+use zigzag::formats::charts::BROTHER_NUMBERS;
+pub use zigzag::formats::charts::brother_number;
 use zigzag::formats::jef_data::JEF_PALETTE;
 use zigzag::formats::pec_data::PEC_PALETTE;
 use zigzag::params::Kind;
@@ -34,7 +34,6 @@ pub fn chart(b: Brand) -> Vec<([u8; 3], &'static str, Option<&'static str>)> {
             .collect(),
     }
 }
-
 
 /// Brother Embroidery thread names by number, as Brother prints them
 /// (Brother's "Thread Color List (BROTHER EMBROIDERY)" for Artspira).
@@ -431,10 +430,57 @@ impl Studio {
         changed
     }
 
+    /// One summary per object RGB, never per planned pass or Stop boundary.
+    fn simple_threads(&mut self, ui: &mut egui::Ui) {
+        let threads = self.design_threads();
+        if threads.is_empty() {
+            caption(ui, "Nothing to sew yet.");
+            return;
+        }
+        let selected = self.sel_indices();
+        egui::ScrollArea::vertical()
+            .id_salt("simple-thread-colors")
+            .max_height(crate::theme::ROW_H * 10.0)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                for (color, objects, stitches) in threads {
+                    ui.push_id(("simple-thread", color), |ui| {
+                        ui.horizontal(|ui| {
+                            let response = swatch(ui, color, crate::theme::LIST_SWATCH, false);
+                            response.widget_info(|| egui::WidgetInfo::labeled(
+                                egui::Role::Button, true, format!("Thread color RGB {color:?}"),
+                            ));
+                            if response.on_hover_text("Change this color everywhere it is used; selects all matching objects").clicked() {
+                                self.set_selection(&objects);
+                                self.open_picker(ui.next_widget_position(), None);
+                            }
+                            let (_, name, number) = nearest(self.view_tools.brand, color);
+                            let name = label(name, number);
+                            let on = selected.len() == objects.len()
+                                && objects.iter().all(|i| selected.contains(i));
+                            // Reserve the count before allocating the truncated name.
+                            let count = crate::widgets::fmt_int(stitches);
+                            let count_width = ui.painter().layout_no_wrap(
+                                count.clone(), egui::FontId::proportional(11.0), pal_ui(ui).secondary,
+                            ).size().x;
+                            let width = (ui.available_width() - count_width - ui.spacing().item_spacing.x).max(0.0);
+                            if ui.add_sized(
+                                [width, crate::theme::ROW_H],
+                                egui::Button::selectable(on, &name).truncate(),
+                            ).on_hover_text(&name).clicked() {
+                                self.set_selection(&objects);
+                            }
+                            caption(ui, count);
+                        });
+                    });
+                }
+            });
+    }
+
     pub fn threads_body(&mut self, ui: &mut egui::Ui) {
         ui.spacing_mut().item_spacing.y = crate::theme::space::S;
 
-        // ---- Planned passes, with pass or global color editing.
+        // ---- Sewing passes or distinct document colors.
         crate::theme::segmented(
             ui,
             "thread-view",
@@ -442,7 +488,20 @@ impl Studio {
             &[(true, "Sewing Order"), (false, "By Color")],
         );
         ui.add_space(crate::theme::space::XS);
-        self.sequence_list(ui);
+        if !self.view_tools.thread_order {
+            crate::theme::segmented(
+                ui,
+                "thread-color-detail",
+                &mut self.view_tools.thread_advanced,
+                &[(false, "Simple"), (true, "Advanced")],
+            );
+            ui.add_space(crate::theme::space::XS);
+        }
+        if self.view_tools.thread_order || self.view_tools.thread_advanced {
+            self.sequence_list(ui);
+        } else {
+            self.simple_threads(ui);
+        }
         ui.spacing_mut().item_spacing.y = crate::theme::space::S;
         ui.add_space(crate::theme::space::S);
         // (Wrapped: in a narrow dock the counts go under the buttons.)
@@ -550,12 +609,13 @@ mod tests {
         h.run_steps(2);
         let sun = h.state().names.iter().position(|n| n == "sun").unwrap();
         assert_eq!(h.state().sel_indices(), vec![sun]);
-        // By Color preserves successive passes, including repeated colors.
+        // By Color defaults to distinct RGB summaries.
         h.get_by_label("By Color").click();
         h.run_steps(2);
         assert!(!h.state().view_tools.thread_order);
-        assert!(h.query_by_label("1 Ultramarine (406)").is_some());
-        assert!(h.query_by_label("4 Ultramarine (406)").is_some());
+        assert!(!h.state().view_tools.thread_advanced);
+        assert!(h.query_by_label("Ultramarine (406)").is_some());
+        assert!(h.query_by_label("4 Ultramarine (406)").is_none());
         // Group Colors is there either way.
         assert!(h.query_by_label("Group Colors").is_some());
     }
@@ -563,6 +623,7 @@ mod tests {
     #[test]
     fn by_color_swatches_edit_all_occurrences_but_headers_select_one_pass() {
         let mut h = studio();
+        h.state_mut().view_tools.thread_advanced = true;
         h.get_by_label("By Color").click();
         h.run_steps(2);
         let objects = h.state().design.block_shapes[0].clone();
@@ -617,6 +678,7 @@ mod tests {
             .map(|s| format!("{:?}", s.params))
             .collect();
         let undo = h.state().undo.len();
+        h.state_mut().view_tools.thread_advanced = true;
         for order in [false, true, false] {
             h.state_mut().view_tools.thread_order = order;
             h.run_steps(3);
@@ -633,6 +695,141 @@ mod tests {
             );
             assert_eq!(h.state().undo.len(), undo);
         }
+    }
+
+    #[test]
+    fn simple_colors_survive_stop_undo_save_and_mode_changes() {
+        use zigzag::params::EndCommand;
+        let mut h = studio();
+        h.get_by_label("By Color").click();
+        h.run_steps(3);
+        if h.state().dock.visible(crate::dock::PanelId::Stitch) {
+            h.state_mut().dock.toggle(crate::dock::PanelId::Stitch);
+        }
+        h.run_steps(2);
+        let groups = h.state().design_threads();
+        assert_eq!(groups.len(), 3);
+        assert_eq!(h.state().design.blocks.len(), 4);
+        assert!(h.query_by_label_contains("Start command:").is_none());
+        h.get_by_label("Ultramarine (406)").click();
+        h.run_steps(2);
+        assert_eq!(h.state().sel_indices(), groups[0].1);
+        // Same-color consecutive objects expose a real Stop split in Advanced.
+        for shape in &mut h.state_mut().doc.shapes {
+            shape.color = [170, 0, 0];
+        }
+        h.state_mut().dirty = true;
+        h.state_mut().replan();
+        h.run_steps(4);
+        h.state_mut().stable = h.state().doc.clone();
+        let before = h.state().design_threads();
+        h.get_by_label("Advanced").click();
+        h.run_steps(3);
+        h.query_all_by_label("End command: Auto")
+            .next()
+            .unwrap()
+            .click();
+        h.run_steps(2);
+        h.get_by_label("Stop").click();
+        h.run_steps(4);
+        assert_eq!(
+            h.state().doc.shapes[0].params.end_command(),
+            EndCommand::Stop
+        );
+        assert_eq!(h.state().design.blocks.len(), 2);
+        assert!(h.state().view_tools.thread_advanced);
+        h.get_by_label("Simple").click();
+        h.run_steps(3);
+        assert_eq!(
+            h.state()
+                .design_threads()
+                .iter()
+                .map(|(c, o, _)| (*c, o.clone()))
+                .collect::<Vec<_>>(),
+            before
+                .iter()
+                .map(|(c, o, _)| (*c, o.clone()))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(h.query_all_by_label("Red (800)").count(), 1);
+        assert!(h.query_by_label_contains("(stop)").is_none());
+        assert!(
+            !h.state_mut()
+                .run_tool("undo", &serde_json::json!({}))
+                .is_error
+        );
+        h.run_steps(4);
+        assert!(!h.state().view_tools.thread_advanced);
+        assert_eq!(h.state().design.blocks.len(), 1);
+        for advanced in [false, true] {
+            h.state_mut().view_tools.thread_advanced = advanced;
+            let path = std::env::temp_dir().join(format!(
+                "zigzag-simple-mode-{}-{advanced}.svg",
+                std::process::id()
+            ));
+            assert!(h.state_mut().save(Some(&path)));
+            h.state_mut().replan();
+            h.run_steps(4);
+            assert_eq!(h.state().view_tools.thread_advanced, advanced);
+            h.get_by_label("Sewing Order").click();
+            h.run_steps(2);
+            assert!(h.query_by_label("Simple").is_none());
+            h.get_by_label("By Color").click();
+            h.run_steps(2);
+            assert_eq!(h.state().view_tools.thread_advanced, advanced);
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn simple_swatch_globally_recolors_repeated_rgb_with_one_undo() {
+        let mut h = studio();
+        h.get_by_label("By Color").click();
+        h.run_steps(2);
+        let (color, objects, _) = h.state().design_threads()[0].clone();
+        let undo = h.state().undo.len();
+        h.get_by_label(&format!("Thread color RGB {color:?}"))
+            .click();
+        h.run_steps(2);
+        assert_eq!(h.state().sel_indices(), objects);
+        let (color, name, number) = chart(Brand::Brother)[10];
+        h.get_by_label(&label(name, number)).click();
+        h.run_steps(3);
+        assert!(
+            objects
+                .iter()
+                .all(|&i| h.state().doc.shapes[i].color == color)
+        );
+        assert_eq!(h.state().undo.len(), undo + 1);
+    }
+
+    #[test]
+    fn simple_summary_fits_260px_and_swatch_recolors_every_occurrence() {
+        let mut frame = studio();
+        frame.state_mut().view_tools.thread_order = false;
+        let all = frame.state().design_threads()[0].1.clone();
+        let color = frame.state().design_threads()[0].0;
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(260.0, 500.0))
+            .build_ui_state(
+                |ui, s: &mut &mut Studio| s.threads_body(ui),
+                frame.state_mut(),
+            );
+        h.run_steps(3);
+        for text in ["Simple", "Advanced", "Ultramarine (406)"] {
+            let r = h.get_by_label(text).rect();
+            assert!(r.left() >= 0.0 && r.right() <= 260.0, "{text}: {r:?}");
+        }
+        let name = h.get_by_label("Ultramarine (406)");
+        name.focus();
+        h.key_press(egui::Key::Space);
+        h.run_steps(2);
+        assert_eq!(h.state().sel_indices(), all);
+        h.get_by_label(&format!("Thread color RGB {color:?}"))
+            .click();
+        h.run_steps(2);
+        assert_eq!(h.state().sel_indices(), all);
+        assert!(h.state().picker.is_some());
     }
 
     #[test]

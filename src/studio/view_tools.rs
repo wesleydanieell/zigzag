@@ -79,6 +79,8 @@ pub struct ViewTools {
     pub brand: crate::threads::Brand,
     /// The Threads panel lists threads in sewing order (else by color).
     pub thread_order: bool,
+    /// UI-only detail mode for By Color; independent of planned pass boundaries.
+    pub thread_advanced: bool,
 }
 
 impl Default for ViewTools {
@@ -114,6 +116,7 @@ impl Default for ViewTools {
             stitch_view: Default::default(),
             brand: Default::default(),
             thread_order: true,
+            thread_advanced: false,
         }
     }
 }

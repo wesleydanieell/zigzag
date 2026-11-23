@@ -4550,6 +4550,7 @@ mod tests {
                 }
                 s.dock.move_panel(PanelId::Threads, Place::Left, None);
                 s.view_tools.thread_order = !by_color;
+                s.view_tools.thread_advanced = true;
                 h.run_steps(5);
                 let original: Vec<_> = h.state().doc.shapes.iter().map(|s| s.uid).collect();
                 assert_ne!(original[0], original[1]);
@@ -4737,6 +4738,7 @@ mod tests {
         }
         s.dock.move_panel(PanelId::Threads, Place::Left, None);
         s.view_tools.thread_order = !by_color;
+        s.view_tools.thread_advanced = true;
         h.run_steps(5);
         assert_eq!(
             h.state().design.block_shapes,
