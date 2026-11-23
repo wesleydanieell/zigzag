@@ -1,12 +1,11 @@
 //! The Threads panel: the design's threads in sewing order (with its color
-//! changes and trims) or once each by color (edit one and every object in
-//! that thread follows), and real thread charts to pick from.
+//! changes and trims), with pass or global color editing, and real thread
+//! charts to pick from.
 
 pub use zigzag::formats::charts::brother_number;
 use zigzag::formats::charts::BROTHER_NUMBERS;
 use crate::app::Studio;
 use crate::theme::{caption, pal_ui};
-use crate::widgets::fmt_int;
 use eframe::egui::{self, Color32, Sense, Stroke, Vec2};
 use zigzag::formats::jef_data::JEF_PALETTE;
 use zigzag::formats::pec_data::PEC_PALETTE;
@@ -432,110 +431,10 @@ impl Studio {
         changed
     }
 
-    /// Each thread the design uses, once: how many objects and stitches.
-    /// Click a row to select its objects, its swatch to change the thread
-    /// everywhere it's used.
-    fn color_list(&mut self, ui: &mut egui::Ui) {
-        let p = pal_ui(ui);
-        let brand = self.view_tools.brand;
-        let threads = self.design_threads();
-        if threads.is_empty() {
-            caption(ui, "No threads yet.");
-        }
-        let selected: Vec<usize> = self.sel_indices();
-        let mut select = None;
-        ui.spacing_mut().item_spacing.y = 0.0;
-        let mut open_picker = None;
-        for (c, objects, stitches) in &threads {
-            use crate::theme::{LIST_SWATCH, ROW_H, space};
-            // Same row layout as the sewing-order list.
-            let (rect, resp) =
-                ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
-            let on = !selected.is_empty()
-                && objects.iter().all(|i| selected.contains(i))
-                && selected.len() == objects.len();
-            if on {
-                ui.painter()
-                    .rect_filled(rect, 5.0, p.accent.gamma_multiply(0.18));
-            } else if resp.hovered() {
-                ui.painter().rect_filled(rect, 5.0, p.hover);
-            }
-            let sw = egui::Rect::from_min_size(
-                egui::pos2(rect.left() + space::XS, rect.center().y - LIST_SWATCH / 2.0),
-                Vec2::splat(LIST_SWATCH),
-            );
-            let swr = ui.interact(
-                sw,
-                ui.make_persistent_id(("thread-swatch", *c)),
-                Sense::click(),
-            );
-            let painter = ui.painter();
-            painter.rect_filled(sw, 3.0, Color32::from_rgb(c[0], c[1], c[2]));
-            painter.rect_stroke(
-                sw,
-                3.0,
-                Stroke::new(
-                    if swr.hovered() { 1.5 } else { 1.0 },
-                    if swr.hovered() {
-                        p.text
-                    } else {
-                        Color32::from_black_alpha(40)
-                    },
-                ),
-                egui::StrokeKind::Inside,
-            );
-            let (_, name, number) = nearest(brand, *c);
-            painter.text(
-                egui::pos2(sw.right() + space::S, rect.center().y),
-                egui::Align2::LEFT_CENTER,
-                label(name, number),
-                egui::FontId::proportional(12.0),
-                if on { p.accent } else { p.text },
-            );
-            painter.text(
-                egui::pos2(rect.right() - space::XS, rect.center().y),
-                egui::Align2::RIGHT_CENTER,
-                format!("{} · {}", objects.len(), fmt_int(*stitches)),
-                egui::FontId::proportional(11.0),
-                p.secondary,
-            );
-            resp.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::Role::Button, true, label(name, number))
-            });
-            if swr
-                .on_hover_text("Change this thread everywhere it's used")
-                .clicked()
-            {
-                select = Some(objects.clone());
-                // Just left of the dock, level with the row.
-                let w = PICKER_W + 2.0 * space::M;
-                open_picker = Some(egui::pos2(
-                    rect.left() - space::M - space::S - w,
-                    rect.top() - space::M,
-                ));
-            } else if resp
-                .on_hover_text(format!(
-                    "Select the {} object(s) sewn in this thread",
-                    objects.len()
-                ))
-                .clicked()
-            {
-                select = Some(objects.clone());
-            }
-        }
-        if let Some(at) = open_picker {
-            // The picker edits the selection: every object in this thread.
-            self.open_picker(at, None);
-        }
-        if let Some(v) = select {
-            self.set_selection(&v);
-        }
-    }
-
     pub fn threads_body(&mut self, ui: &mut egui::Ui) {
         ui.spacing_mut().item_spacing.y = crate::theme::space::S;
 
-        // ---- The design's threads: in sewing order, or once each by color.
+        // ---- Planned passes, with pass or global color editing.
         crate::theme::segmented(
             ui,
             "thread-view",
@@ -543,11 +442,7 @@ impl Studio {
             &[(true, "Sewing Order"), (false, "By Color")],
         );
         ui.add_space(crate::theme::space::XS);
-        if self.view_tools.thread_order {
-            self.sequence_list(ui);
-        } else {
-            self.color_list(ui);
-        }
+        self.sequence_list(ui);
         ui.spacing_mut().item_spacing.y = crate::theme::space::S;
         ui.add_space(crate::theme::space::S);
         // (Wrapped: in a narrow dock the counts go under the buttons.)
@@ -655,14 +550,89 @@ mod tests {
         h.run_steps(2);
         let sun = h.state().names.iter().position(|n| n == "sun").unwrap();
         assert_eq!(h.state().sel_indices(), vec![sun]);
-        // By color: each thread once.
+        // By Color preserves successive passes, including repeated colors.
         h.get_by_label("By Color").click();
         h.run_steps(2);
         assert!(!h.state().view_tools.thread_order);
-        assert!(h.query_by_label("1 Ultramarine (406)").is_none());
-        assert!(h.query_all_by_label("Ultramarine (406)").count() > 0);
+        assert!(h.query_by_label("1 Ultramarine (406)").is_some());
+        assert!(h.query_by_label("4 Ultramarine (406)").is_some());
         // Group Colors is there either way.
         assert!(h.query_by_label("Group Colors").is_some());
+    }
+
+    #[test]
+    fn by_color_swatches_edit_all_occurrences_but_headers_select_one_pass() {
+        let mut h = studio();
+        h.get_by_label("By Color").click();
+        h.run_steps(2);
+        let objects = h.state().design.block_shapes[0].clone();
+        let color = h.state().design.blocks[0].color;
+        let all = h
+            .state()
+            .design_threads()
+            .into_iter()
+            .find(|(c, _, _)| *c == color)
+            .unwrap()
+            .1;
+        assert!(all.len() > objects.len());
+        h.get_by_label("1 Ultramarine (406)").click();
+        h.run_steps(2);
+        assert_eq!(h.state().sel_indices(), objects);
+        let undo = h.state().undo.len();
+        h.get_by_label("Thread color for pass 4").click();
+        h.run_steps(2);
+        assert_eq!(h.state().sel_indices(), all);
+        assert_eq!(h.state().undo.len(), undo);
+        let (c, name, number) = chart(Brand::Brother)[10];
+        h.get_by_label(&label(name, number)).click();
+        h.run_steps(3);
+        for i in all {
+            assert_eq!(h.state().doc.shapes[i].color, c);
+        }
+        assert_eq!(h.state().undo.len(), undo + 1);
+    }
+
+    #[test]
+    fn same_color_stop_passes_survive_drawing_and_mode_switching() {
+        use zigzag::params::{EndCommand, StartCommand};
+        let mut h = studio();
+        for shape in &mut h.state_mut().doc.shapes {
+            shape.color = [170, 0, 0];
+        }
+        h.state_mut().doc.shapes[0]
+            .params
+            .set_start_command(StartCommand::Trim);
+        h.state_mut().doc.shapes[0]
+            .params
+            .set_end_command(EndCommand::TrimAndStop);
+        h.state_mut().dirty = true;
+        h.state_mut().replan();
+        h.run_steps(4);
+        assert_eq!(h.state().design.blocks.len(), 2);
+        let params: Vec<_> = h
+            .state()
+            .doc
+            .shapes
+            .iter()
+            .map(|s| format!("{:?}", s.params))
+            .collect();
+        let undo = h.state().undo.len();
+        for order in [false, true, false] {
+            h.state_mut().view_tools.thread_order = order;
+            h.run_steps(3);
+            assert_eq!(h.state().design.blocks.len(), 2);
+            assert!(h.query_by_label_contains("(stop)").is_some());
+            assert_eq!(
+                h.state()
+                    .doc
+                    .shapes
+                    .iter()
+                    .map(|s| format!("{:?}", s.params))
+                    .collect::<Vec<_>>(),
+                params
+            );
+            assert_eq!(h.state().undo.len(), undo);
+        }
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # Object boundary commands
 
-Threads → Sewing Order lists objects under consecutive thread blocks in actual
+Threads → Sewing Order and By Color list objects under consecutive thread blocks in actual
 planned sewing order. Repeated A–B–A colors stay three blocks. Hidden, skipped,
 and non-sewing objects are absent; an object producing multiple runs appears once
 per block. Click its name to select it on the canvas. The two inline menus edit
@@ -38,3 +38,16 @@ The full DG command catalog is **not implemented**. Start Stop, explicit No
 Command, Jump, speed, borer, laser, sequin and other machine-specific interventions
 are not offered. This is a clean-room UI over the existing trim/stop planner,
 not a new embroidery engine or export capability.
+
+Threads → By Color shows the same successive planned passes and nested object
+rows as Sewing Order: A–B–A stays three passes, and consecutive same-color passes
+separated by a Stop remain separate, marked “(stop)”. Pass numbers and stitch
+counts describe the current plan; they are not saved object identities. Both
+views share object selection and Start/End menus, with the same parameters and
+undo history. Merely viewing or switching modes never adds machine commands.
+
+Click a pass header to select only that pass's objects. In By Color, clicking
+any occurrence's swatch selects all document objects with that RGB and opens
+the picker for global recoloring (including repeated passes). Sewing Order's
+swatch selects and recolors only that pass. Swatch tooltips explain this scope.
+Both lists scroll within ten header-row heights; long names have full tooltips.

@@ -3785,7 +3785,7 @@ impl Studio {
 
     /// Objects in execution order under each consecutive thread block, a stop where
     /// the same thread comes twice running. Click a row for its objects;
-    /// click its swatch to change that block's thread.
+    /// swatches edit one pass in Sewing Order, all matching RGBs in By Color.
     pub(crate) fn sequence_list(&mut self, ui: &mut egui::Ui) {
         ui.spacing_mut().item_spacing.y = 0.0;
         if self.design.blocks.is_empty() {
@@ -3811,7 +3811,16 @@ impl Studio {
                 Vec2::new(ui.available_width(), theme::ROW_H),
                 Sense::click(),
             );
-            let objects = self.design.block_shapes.get(k).cloned().unwrap_or_default();
+            let mut seen = std::collections::HashSet::new();
+            let objects: Vec<_> = self
+                .design
+                .block_shapes
+                .get(k)
+                .into_iter()
+                .flatten()
+                .copied()
+                .filter(|i| seen.insert(*i))
+                .collect();
             let on = !selected.is_empty()
                 && objects.len() == selected.len()
                 && objects.iter().all(|i| selected.contains(i));
@@ -3858,21 +3867,29 @@ impl Studio {
             let (_, name, number) = crate::threads::nearest(self.view_tools.brand, blk.color);
             let name = crate::threads::label(name, number);
             let label = if stop {
-                format!("{name} · stop")
+                format!("{name} (stop)")
             } else {
-                name
+                name.clone()
             };
-            painter.text(
+            let label_rect = Rect::from_min_max(
+                Pos2::new(sw.right() + theme::space::S, rect.top()),
+                Pos2::new(rect.right() - if stop { 96.0 } else { 48.0 }, rect.bottom()),
+            );
+            painter.with_clip_rect(label_rect).text(
                 Pos2::new(sw.right() + theme::space::S, rect.center().y),
                 egui::Align2::LEFT_CENTER,
-                &label,
+                &name,
                 egui::FontId::proportional(12.0),
                 if on { p.accent } else { p.text },
             );
             painter.text(
                 Pos2::new(rect.right() - 4.0, rect.center().y),
                 egui::Align2::RIGHT_CENTER,
-                fmt_int(n),
+                if stop {
+                    format!("(stop) · {}", fmt_int(n))
+                } else {
+                    fmt_int(n)
+                },
                 egui::FontId::proportional(11.0),
                 p.secondary,
             );
@@ -3883,22 +3900,44 @@ impl Studio {
                 .iter()
                 .filter_map(|&i| self.names.get(i).cloned())
                 .collect();
-            if swr.on_hover_text("Change this block's thread").clicked() {
-                pick = Some(objects.clone());
+            swr.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::Role::Button,
+                    true,
+                    format!("Thread color for pass {}", k + 1),
+                )
+            });
+            let global_color = !self.view_tools.thread_order;
+            if swr
+                .on_hover_text(if global_color {
+                    "Change this color everywhere it is used; selects all matching objects"
+                } else {
+                    "Change this pass's thread"
+                })
+                .clicked()
+            {
+                pick = Some(if global_color {
+                    self.design_threads()
+                        .into_iter()
+                        .find(|(color, _, _)| *color == blk.color)
+                        .map(|(_, objects, _)| objects)
+                        .unwrap_or_default()
+                } else {
+                    objects.clone()
+                });
                 let w = crate::threads::PICKER_W + 2.0 * theme::space::M;
                 picker = Some(Pos2::new(
                     rect.left() - theme::space::M - theme::space::S - w,
                     rect.top() - theme::space::M,
                 ));
             } else if resp
-                .on_hover_text(format!("Sews: {}", names.join(", ")))
+                .on_hover_text(format!("Select this pass. Sews: {}", names.join(", ")))
                 .clicked()
             {
                 pick = Some(objects.clone());
             }
             // block_shapes is the planner's execution order, not the Layers stack.
-            let mut seen = std::collections::HashSet::new();
-            for i in objects.into_iter().filter(|i| seen.insert(*i)) {
+            for i in objects {
                 let Some(shape) = self.doc.shapes.get_mut(i) else {
                     continue;
                 };
@@ -4327,6 +4366,12 @@ mod tests {
 
     #[test]
     fn sequence_boundary_commands_follow_sewn_objects_and_undo() {
+        for by_color in [false, true] {
+            sequence_commands_in_mode(by_color);
+        }
+    }
+
+    fn sequence_commands_in_mode(by_color: bool) {
         use zigzag::params::{EndCommand, StartCommand};
         let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="80mm" height="20mm" viewBox="0 0 80 20">
             <path id="first_run" d="M0 0 L10 0" stroke="#aa0000" fill="none"/>
@@ -4352,7 +4397,7 @@ mod tests {
             s.dock.toggle(PanelId::Threads);
         }
         s.dock.move_panel(PanelId::Threads, Place::Left, None);
-        s.view_tools.thread_order = true;
+        s.view_tools.thread_order = !by_color;
         h.run_steps(5);
         assert_eq!(
             h.state().design.block_shapes,
@@ -4397,6 +4442,19 @@ mod tests {
             EndCommand::TrimAndStop
         );
         assert_eq!(h.state().undo.len(), undo + 2);
+        h.state_mut().view_tools.thread_order = by_color;
+        h.run_steps(3);
+        assert_eq!(
+            h.state().doc.shapes[1].params.start_command(),
+            StartCommand::Trim
+        );
+        assert_eq!(
+            h.state().doc.shapes[1].params.end_command(),
+            EndCommand::TrimAndStop
+        );
+        assert!(h.query_by_label("Start command: Trim").is_some());
+        assert!(h.query_by_label("End command: Trim + Stop").is_some());
+
         assert!(
             !h.state_mut()
                 .run_tool("undo", &serde_json::json!({}))
@@ -4411,6 +4469,52 @@ mod tests {
             h.state().doc.shapes[1].params.start_command(),
             StartCommand::Trim
         );
+    }
+
+    #[test]
+    fn by_color_duplicate_names_fit_narrow_dock_and_scroll() {
+        let svg = format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="80mm" height="20mm" viewBox="0 0 80 20">{}</svg>"##,
+            (0..24).map(|i| format!(
+                r##"<path id="object{i}_run" d="M0 {i} L10 {i}" stroke="#aa0000" fill="none"/>"##
+            )).collect::<String>()
+        );
+        let mut studio = Studio::with_file(None, None);
+        studio.set_document(zigzag::document::Document::from_svg(&svg, "scroll", None).unwrap());
+        // Plan through the normal frame before using the isolated 260px panel.
+        let mut frame = Harness::builder().build_ui_state(|ui, s: &mut Studio| s.frame(ui), studio);
+        frame.run_steps(4);
+        for name in &mut frame.state_mut().names {
+            *name = "Repeated object with a long name".into();
+        }
+        frame.state_mut().view_tools.thread_order = false;
+        // Use the same Studio in a narrow panel via a borrowed state.
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(260.0, 500.0))
+            .build_ui_state(
+                |ui, s: &mut &mut Studio| s.sequence_list(ui),
+                frame.state_mut(),
+            );
+        h.run_steps(3);
+        assert_eq!(
+            h.query_all_by_label("Select sewn object Repeated object with a long name")
+                .count(),
+            24
+        );
+        let rows: Vec<_> = h.query_all_by_label_contains("Start command:").collect();
+        assert_eq!(rows.len(), 24);
+        assert!(rows[0].rect().right() <= 260.0);
+        rows[23].scroll_to_me();
+        h.run_steps(8);
+        let last = h
+            .query_all_by_label("Select sewn object Repeated object with a long name")
+            .nth(23)
+            .unwrap();
+        assert!(last.rect().bottom() <= theme::ROW_H * 10.0 + 16.0);
+        last.click();
+        h.run_steps(2);
+        assert_eq!(h.state().sel_indices(), vec![23]);
+        assert!(h.state().undo.is_empty());
     }
 
     #[test]
