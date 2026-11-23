@@ -2208,7 +2208,17 @@ impl Studio {
                                 Sense::click_and_drag(),
                             );
                             let body = row_body(rect);
-                            let columns = layer_columns(rect, *depth);
+                            let stitches: usize = members
+                                .iter()
+                                .map(|&m| self.design.per_shape.get(m).copied().unwrap_or(0))
+                                .sum();
+                            let count_label = fmt_int(stitches);
+                            let count_width = ui.painter().layout_no_wrap(
+                                count_label.clone(),
+                                egui::FontId::proportional(11.0),
+                                p.secondary,
+                            ).size().x;
+                            let columns = layer_columns(rect, *depth, count_width);
                             let gutter = gutter_flag(rect, resp.interact_pointer_pos());
                             // Dragged: the group's layers go (with the rest
                             // of the selection, when they're all in it).
@@ -2301,13 +2311,9 @@ impl Studio {
                                     .collect::<Vec<_>>(),
                                 true,
                             );
-                            let stitches: usize = members
-                                .iter()
-                                .map(|&m| self.design.per_shape.get(m).copied().unwrap_or(0))
-                                .sum();
                             let right = columns.count.right();
                             let galley = painter.layout_no_wrap(
-                                fmt_int(stitches),
+                                count_label,
                                 egui::FontId::proportional(11.0),
                                 fg2,
                             );
@@ -2385,7 +2391,19 @@ impl Studio {
                     });
                     let painter = ui.painter();
                     let body = row_body(rect);
-                    let columns = layer_columns(rect, depth);
+                    let count_text = if hidden {
+                        "hidden".to_string()
+                    } else if kind == Kind::Skip {
+                        "off".to_string()
+                    } else {
+                        fmt_int(count)
+                    };
+                    let count_width = painter.layout_no_wrap(
+                        count_text.clone(),
+                        egui::FontId::proportional(11.0),
+                        p.secondary,
+                    ).size().x;
+                    let columns = layer_columns(rect, depth, count_width);
                     let gutter = gutter_flag(rect, resp.interact_pointer_pos());
                     eye_and_lock(painter, rect, resp.hover_pos(), hidden, locked, &p);
                     if selected {
@@ -2420,13 +2438,6 @@ impl Studio {
                         fg
                     };
                     let right = columns.count.right();
-                    let count_text = if hidden {
-                        "hidden".to_string()
-                    } else if kind == Kind::Skip {
-                        "off".to_string()
-                    } else {
-                        fmt_int(count)
-                    };
                     let galley =
                         painter.layout_no_wrap(count_text, egui::FontId::proportional(11.0), fg2);
                     let cw = galley.size().x;
@@ -4467,7 +4478,7 @@ const GUTTER: f32 = 2.0 * FLAG_COL + 2.0;
 // from the fixed eye/lock gutter and the right-aligned secondary count.
 const LAYER_DEPTH_STEP: f32 = 2.0 * theme::space::S;
 const LAYER_PREVIEW_SIZE: f32 = theme::ROW_H - theme::space::XS;
-const LAYER_COUNT_WIDTH: f32 = 3.0 * theme::space::M;
+const LAYER_COUNT_MIN_WIDTH: f32 = 3.0 * theme::space::M;
 
 struct LayerColumns {
     preview: Rect,
@@ -4475,17 +4486,25 @@ struct LayerColumns {
     count: Rect,
 }
 
-fn layer_columns(row: Rect, depth: usize) -> LayerColumns {
+fn layer_columns(row: Rect, depth: usize, count_text_width: f32) -> LayerColumns {
     let leading = row.left() + GUTTER + depth as f32 * LAYER_DEPTH_STEP;
     let preview = Rect::from_center_size(
         Pos2::new(leading + 34.0, row.center().y),
         Vec2::splat(LAYER_PREVIEW_SIZE),
     );
-    let count = Rect::from_min_max(
-        Pos2::new(row.right() - theme::space::S - LAYER_COUNT_WIDTH, row.top()),
-        Pos2::new(row.right() - theme::space::S, row.bottom()),
-    );
+    // Measure the actual rendered count instead of clipping large totals
+    // to a fixed three-digit column. Reserve the name/preview area when
+    // the dock is too narrow to display everything at once.
+    let right = row.right() - theme::space::S;
     let left = preview.right() + theme::space::S;
+    let max_count_width = (right - left - 2.0 * theme::space::XS).max(0.0);
+    let count_width = (count_text_width.ceil() + 2.0)
+        .max(LAYER_COUNT_MIN_WIDTH)
+        .min(max_count_width);
+    let count = Rect::from_min_max(
+        Pos2::new(right - count_width, row.top()),
+        Pos2::new(right, row.bottom()),
+    );
     let name = Rect::from_min_max(
         Pos2::new(left, row.top()),
         Pos2::new((count.left() - theme::space::S).max(left), row.bottom()),
@@ -4630,18 +4649,44 @@ mod tests {
             for depth in 0..=2 {
                 let row =
                     Rect::from_min_size(Pos2::new(8.0, 8.0), Vec2::new(width - 16.0, theme::ROW_H));
-                let columns = layer_columns(row, depth);
+                let columns = layer_columns(row, depth, 28.0);
                 assert_eq!(columns.preview.size(), Vec2::splat(20.0));
                 assert!(columns.name.left() - columns.preview.right() >= theme::space::XS);
                 assert!(columns.name.right() <= columns.count.left() - theme::space::S);
                 assert_eq!(columns.count.right(), row.right() - theme::space::S);
                 assert!(row.contains_rect(columns.preview));
                 assert!(row.contains_rect(columns.name));
-                let nested = layer_columns(row, depth + 1);
+                let nested = layer_columns(row, depth + 1, 28.0);
                 assert_eq!(nested.preview.left() - columns.preview.left(), 16.0);
                 assert_eq!(nested.name.left() - columns.name.left(), 16.0);
             }
         }
+    }
+
+    #[test]
+    fn layers_count_column_grows_for_large_totals_without_overlapping_preview() {
+        // The old fixed 36px column lost the first digits of 1,234,567+.
+        for count_width in [36.0, 64.0, 90.0] {
+            for row_width in [260.0, 420.0] {
+                let row = Rect::from_min_size(
+                    Pos2::ZERO,
+                    Vec2::new(row_width, theme::ROW_H),
+                );
+                let columns = layer_columns(row, 0, count_width);
+                assert!(
+                    columns.count.width() >= count_width,
+                    "{row_width}px row must show {count_width}px count"
+                );
+                assert!(columns.name.right() <= columns.count.left() - theme::space::XS);
+                assert!(columns.name.left() >= columns.preview.right() + theme::space::XS);
+            }
+        }
+        // On a very narrow nested row, the columns still cannot overlap:
+        // the count is clipped rather than overwriting the object name.
+        let row = Rect::from_min_size(Pos2::ZERO, Vec2::new(184.0, theme::ROW_H));
+        let columns = layer_columns(row, 2, 90.0);
+        assert!(columns.name.right() <= columns.count.left() - theme::space::XS);
+        assert!(row.contains_rect(columns.count));
     }
 
     #[test]
