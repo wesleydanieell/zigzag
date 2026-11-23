@@ -50,10 +50,9 @@ Threads → By Color → Advanced always shows a color parent and child object r
 including a single color with a single object. Adjacent same-RGB machine passes
 merge visually, even across Stop boundaries; A–B–A remains three ordered groups.
 An object spanning multiple adjacent passes appears once, in first-sewn order.
-The parent's outlined preview slot is a placeholder; artwork thumbnails are separate.
+Parent groups now show composite filled artwork previews; nested objects have individual thumbnails.
 Groups default expanded. Disclosure buttons support keyboard activation and keep
-expansion through selection, replan, Stop edits and undo using first object UID
-plus RGB, rather than planned block index. Stop remains visible in the child's
+expansion through selection, replan, Stop edits and undo using first object UID, rather than planned block index or color. Stop remains visible in the child's
 existing End menu. Group stitch totals describe the plan; viewing never edits it.
 
 Click a pass header (or Advanced color parent) to select only its objects. In By Color, clicking
@@ -140,15 +139,15 @@ Narrow 260px bounds and keyboard interaction are verified by the GUI harness;
 live narrow/light-theme interaction has not been manually inspected.
 
 No branch switches, commits, pushes, PR creation, or other-worktree edits.
-Reviewer owns the next gate and commit; preview work has not started.
+The reviewer owned that stage; subsequent stacked PRs have added preview work and row spacing.
 
 ### Advanced automatic grouping (2026-11-23)
 
 **Observed in ZigZag code:** This bounded change touches Threads/Dock presentation
 and this document only. No dependencies, thumbnail rendering, planner, SVG command
 serialization or exporter changes. Existing files and machine behavior are unchanged.
-The first-object UID/RGB identity intentionally changes when a different object
-becomes first or the run's color changes; a newly identified group defaults expanded.
+The visual expansion identity follows the first-object UID, so recoloring
+does not unexpectedly collapse the group. A group with a new first object starts expanded.
 
 Automated acceptance: pure adjacent A–A–B–A grouping and cross-pass deduplication;
 one/two-object parent and child rows; Stop visible on child; keyboard disclosure,
