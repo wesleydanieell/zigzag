@@ -39,7 +39,13 @@ Command, Jump, speed, borer, laser, sequin and other machine-specific interventi
 are not offered. This is a clean-room UI over the existing trim/stop planner,
 not a new embroidery engine or export capability.
 
-Threads → By Color shows the same successive planned passes and nested object
+A pass with one sewn object uses one horizontal row: pass number, thread swatch,
+object name, and Start/End controls. Wider docks also show the thread name; narrow
+docks keep it in the swatch tooltip and truncate object names with full tooltips.
+Pass and object selection remain separate click targets. Multiple-object passes
+keep a header followed by compact object rows with the same controls.
+
+Threads → By Color shows the same successive planned passes and object
 rows as Sewing Order: A–B–A stays three passes, and consecutive same-color passes
 separated by a Stop remain separate, marked “(stop)”. Pass numbers and stitch
 counts describe the current plan; they are not saved object identities. Both

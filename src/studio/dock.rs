@@ -3836,10 +3836,6 @@ impl Studio {
         for (k, blk) in self.design.blocks.iter().enumerate() {
             let n: usize = blk.runs.iter().map(|r| r.pts.len()).sum();
             let stop = k > 0 && self.design.blocks[k - 1].color == blk.color;
-            let (rect, resp) = ui.allocate_exact_size(
-                Vec2::new(ui.available_width(), theme::ROW_H),
-                Sense::click(),
-            );
             let mut seen = std::collections::HashSet::new();
             let objects: Vec<_> = self
                 .design
@@ -3850,6 +3846,29 @@ impl Studio {
                 .copied()
                 .filter(|i| seen.insert(*i))
                 .collect();
+            let singleton = objects.len() == 1;
+            let (row, _) = ui.allocate_exact_size(
+                Vec2::new(ui.available_width(), theme::ROW_H.max(24.0)),
+                Sense::hover(),
+            );
+            // Keep a distinct pass target; reserve the rest for the same object
+            // renderer used under grouped headers. Narrow docks favor the name.
+            let header_width = if singleton {
+                if row.width() >= 340.0 { 164.0 } else { 40.0 }
+            } else {
+                row.width()
+            };
+            let rect = Rect::from_min_size(row.min, Vec2::new(header_width, row.height()));
+            let pass_target = if singleton && header_width == 40.0 {
+                Rect::from_min_max(rect.min, Pos2::new(rect.left() + 18.0, rect.bottom()))
+            } else {
+                Rect::from_min_max(Pos2::new(rect.left() + 40.0, rect.top()), rect.max)
+            };
+            let resp = ui.interact(
+                pass_target,
+                ui.make_persistent_id(("sequence-pass", k)),
+                Sense::click(),
+            );
             let on = !selected.is_empty()
                 && objects.len() == selected.len()
                 && objects.iter().all(|i| selected.contains(i));
@@ -3902,26 +3921,40 @@ impl Studio {
             };
             let label_rect = Rect::from_min_max(
                 Pos2::new(sw.right() + theme::space::S, rect.top()),
-                Pos2::new(rect.right() - if stop { 96.0 } else { 48.0 }, rect.bottom()),
+                Pos2::new(
+                    rect.right()
+                        - if singleton {
+                            0.0
+                        } else if stop {
+                            96.0
+                        } else {
+                            48.0
+                        },
+                    rect.bottom(),
+                ),
             );
-            painter.with_clip_rect(label_rect).text(
-                Pos2::new(sw.right() + theme::space::S, rect.center().y),
-                egui::Align2::LEFT_CENTER,
-                &name,
-                egui::FontId::proportional(12.0),
-                if on { p.accent } else { p.text },
-            );
-            painter.text(
-                Pos2::new(rect.right() - 4.0, rect.center().y),
-                egui::Align2::RIGHT_CENTER,
-                if stop {
-                    format!("(stop) · {}", fmt_int(n))
-                } else {
-                    fmt_int(n)
-                },
-                egui::FontId::proportional(11.0),
-                p.secondary,
-            );
+            if !singleton || header_width > 40.0 {
+                painter.with_clip_rect(label_rect).text(
+                    Pos2::new(sw.right() + theme::space::S, rect.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    if singleton { &label } else { &name },
+                    egui::FontId::proportional(12.0),
+                    if on { p.accent } else { p.text },
+                );
+                if !singleton {
+                    painter.text(
+                        Pos2::new(rect.right() - 4.0, rect.center().y),
+                        egui::Align2::RIGHT_CENTER,
+                        if stop {
+                            format!("(stop) · {}", fmt_int(n))
+                        } else {
+                            fmt_int(n)
+                        },
+                        egui::FontId::proportional(11.0),
+                        p.secondary,
+                    );
+                }
+            }
             resp.widget_info(|| {
                 egui::WidgetInfo::labeled(egui::Role::Button, true, format!("{} {label}", k + 1))
             });
@@ -3943,6 +3976,7 @@ impl Studio {
                 } else {
                     "Change this pass's thread"
                 })
+                .on_hover_text(&label)
                 .clicked()
             {
                 pick = Some(if global_color {
@@ -3979,58 +4013,81 @@ impl Studio {
                     .get(i)
                     .cloned()
                     .unwrap_or_else(|| format!("Object {}", shape.uid));
+                let object_row = if singleton {
+                    Rect::from_min_max(Pos2::new(rect.right(), row.top()), row.max)
+                } else {
+                    let (r, _) = ui
+                        .allocate_exact_size(Vec2::new(ui.available_width(), 24.0), Sense::hover());
+                    Rect::from_min_max(Pos2::new(r.left() + 20.0, r.top()), r.max)
+                };
                 ui.push_id(("sequence-object", k, shape.uid), |ui| {
-                    ui.horizontal(|ui| {
-                        ui.add_space(20.0);
-                        let name_width =
-                            (ui.available_width() - 48.0 - 2.0 * ui.spacing().item_spacing.x)
-                                .max(0.0);
-                        let response = ui
-                            .add_sized(
-                                [name_width, 24.0],
-                                egui::Button::selectable(selected.contains(&i), &name)
-                                    .sense(Sense::click_and_drag())
-                                    .truncate(),
-                            )
-                            .on_hover_text(format!("{name}\nDrag to change sewing order"));
-                        let movable = !shape.params.hidden()
-                            && !shape.params.locked()
-                            && shape.params.kind != Some(Kind::Skip);
-                        if movable && response.hovered() {
-                            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
-                        }
-                        if movable && response.drag_started_by(egui::PointerButton::Primary) {
-                            *drag_start = Some((vec![i], name.clone()));
-                        }
-                        if let Some(q) = over.filter(|q| response.rect.contains(*q)) {
-                            let above = q.y < response.rect.center().y;
-                            let y = if above {
-                                response.rect.top()
-                            } else {
-                                response.rect.bottom()
-                            };
-                            *drop = Some((if above { i } else { i + 1 }, y, response.rect.left()));
-                            ui.painter().line_segment(
-                                [
-                                    Pos2::new(response.rect.left(), y),
-                                    Pos2::new(response.rect.right(), y),
-                                ],
-                                Stroke::new(2.0, p.accent),
-                            );
-                        }
-                        response.widget_info(|| {
-                            egui::WidgetInfo::selected(
-                                egui::Role::Button,
-                                true,
-                                selected.contains(&i),
-                                format!("Select sewn object {name}"),
-                            )
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(object_row), |ui| {
+                        ui.set_clip_rect(ui.clip_rect().intersect(object_row));
+                        ui.horizontal(|ui| {
+                            // Keep the name next to the color swatch instead of
+                            // centering short labels inside a full-width button.
+                            // The two command icons remain on the same row.
+                            let max_name_width =
+                                (ui.available_width() - 48.0 - 2.0 * ui.spacing().item_spacing.x)
+                                    .max(0.0);
+                            let label_width = ui
+                                .painter()
+                                .layout_no_wrap(
+                                    name.clone(),
+                                    egui::FontId::proportional(12.0),
+                                    p.text,
+                                )
+                                .size()
+                                .x;
+                            let name_width = (label_width + 32.0).min(max_name_width);
+                            let response = ui
+                                .add_sized(
+                                    [name_width, 24.0],
+                                    egui::Button::selectable(selected.contains(&i), &name)
+                                        .sense(Sense::click_and_drag())
+                                        .truncate(),
+                                )
+                                .on_hover_text(format!("{name}\nDrag to change sewing order"));
+                            let movable = !shape.params.hidden()
+                                && !shape.params.locked()
+                                && shape.params.kind != Some(Kind::Skip);
+                            if movable && response.hovered() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                            }
+                            if movable && response.drag_started_by(egui::PointerButton::Primary) {
+                                *drag_start = Some((vec![i], name.clone()));
+                            }
+                            if let Some(q) = over.filter(|q| response.rect.contains(*q)) {
+                                let above = q.y < response.rect.center().y;
+                                let y = if above {
+                                    response.rect.top()
+                                } else {
+                                    response.rect.bottom()
+                                };
+                                *drop =
+                                    Some((if above { i } else { i + 1 }, y, response.rect.left()));
+                                ui.painter().line_segment(
+                                    [
+                                        Pos2::new(response.rect.left(), y),
+                                        Pos2::new(response.rect.right(), y),
+                                    ],
+                                    Stroke::new(2.0, p.accent),
+                                );
+                            }
+                            response.widget_info(|| {
+                                egui::WidgetInfo::selected(
+                                    egui::Role::Button,
+                                    true,
+                                    selected.contains(&i),
+                                    format!("Select sewn object {name}"),
+                                )
+                            });
+                            if movable && response.clicked() {
+                                pick = Some(vec![i]);
+                            }
+                            start_command_ui(ui, &mut shape.params);
+                            end_command_ui(ui, &mut shape.params);
                         });
-                        if movable && response.clicked() {
-                            pick = Some(vec![i]);
-                        }
-                        start_command_ui(ui, &mut shape.params);
-                        end_command_ui(ui, &mut shape.params);
                     });
                 });
             }
@@ -4784,6 +4841,76 @@ mod tests {
         h.run_steps(2);
         assert_eq!(h.state().sel_indices(), vec![23]);
         assert!(h.state().undo.is_empty());
+    }
+
+    #[test]
+    fn sequence_singletons_share_one_row_at_every_dock_width() {
+        for width in [200.0, 260.0, 420.0, 470.0] {
+            for by_color in [false, true] {
+                for grouped in [false, true] {
+                    let color = if grouped { "#aa0000" } else { "#00aa00" };
+                    let svg = format!(
+                        r##"<svg xmlns="http://www.w3.org/2000/svg" width="40mm" height="20mm" viewBox="0 0 40 20">
+                        <path id="first_run" d="M0 0 L10 0" stroke="#aa0000" fill="none"/>
+                        <path id="second_run" d="M20 0 L30 0" stroke="{color}" fill="none"/>
+                    </svg>"##
+                    );
+                    let mut studio = Studio::with_file(None, None);
+                    studio.set_document(
+                        zigzag::document::Document::from_svg(&svg, "inline", None).unwrap(),
+                    );
+                    let mut frame =
+                        Harness::builder().build_ui_state(|ui, s: &mut Studio| s.frame(ui), studio);
+                    frame.run_steps(4);
+                    frame.state_mut().names[0] =
+                        "first with a very long object name that must truncate".into();
+                    frame.state_mut().view_tools.thread_order = !by_color;
+                    let mut h = Harness::builder()
+                        .with_size(Vec2::new(width, 500.0))
+                        .build_ui_state(
+                            |ui, s: &mut &mut Studio| s.sequence_list(ui),
+                            frame.state_mut(),
+                        );
+                    h.run_steps(3);
+                    let pass = h.get_by_label("1 Red (800)").rect();
+                    let swatch = h.get_by_label("Thread color for pass 1").rect();
+                    let object = h.get_by_label("Select sewn object first with a very long object name that must truncate").rect();
+                    let start = h
+                        .query_all_by_label("Start command: Auto")
+                        .next()
+                        .unwrap()
+                        .rect();
+                    let end = h
+                        .query_all_by_label("End command: Auto")
+                        .next()
+                        .unwrap()
+                        .rect();
+                    assert_eq!(pass.center().y, swatch.center().y);
+                    assert_eq!(object.center().y, start.center().y);
+                    assert_eq!(object.center().y, end.center().y);
+                    if grouped {
+                        assert!(pass.bottom() <= object.top());
+                    } else {
+                        assert_eq!(pass.center().y, object.center().y);
+                        assert!(pass.right() <= object.left());
+                    }
+                    assert!(object.width() > 30.0);
+                    assert!(object.right() <= start.left() && start.right() <= end.left());
+                    assert!(end.right() <= width - 8.0, "{width}: {end:?}");
+                    h.query_all_by_label("Start command: Auto")
+                        .next()
+                        .unwrap()
+                        .click();
+                    h.run_steps(2);
+                    h.get_by_label("Trim").click();
+                    h.run_steps(2);
+                    assert_eq!(
+                        h.state().doc.shapes[0].params.start_command(),
+                        zigzag::params::StartCommand::Trim
+                    );
+                }
+            }
+        }
     }
 
     #[test]

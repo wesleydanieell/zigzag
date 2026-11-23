@@ -210,6 +210,11 @@ fn on_pixels(pts: &mut [Pos2], closed: bool, width: f32, pixels_per_point: f32) 
 }
 
 pub fn paint(p: &Painter, r: Rect, icon: Icon, c: Color32) {
+    let r = if matches!(icon, Icon::CommandStart | Icon::CommandEnd) {
+        r.expand(0.5)
+    } else {
+        r
+    };
     // Unit coordinates: (0,0) top-left .. (1,1) bottom-right of a square box.
     let side = r.width().min(r.height());
     let ppp = p.pixels_per_point();
@@ -245,19 +250,16 @@ pub fn paint(p: &Painter, r: Rect, icon: Icon, c: Color32) {
     use std::f32::consts::PI;
     match icon {
         Icon::CommandStart | Icon::CommandEnd => {
-            let bar = if icon == Icon::CommandStart {
-                0.75
+            // A stitched path, with its filled entry or exit endpoint.
+            line(&[(0.12, 0.5), (0.88, 0.5)]);
+            line(&[(0.36, 0.34), (0.46, 0.66)]);
+            line(&[(0.60, 0.34), (0.70, 0.66)]);
+            let endpoint = if icon == Icon::CommandStart {
+                0.12
             } else {
-                0.25
+                0.88
             };
-            line(&[(bar, 0.12), (bar, 0.88)]);
-            let (from, to) = if icon == Icon::CommandStart {
-                (0.08, 0.58)
-            } else {
-                (0.42, 0.92)
-            };
-            line(&[(from, 0.5), (to, 0.5)]);
-            line(&[(to - 0.2, 0.28), (to, 0.5), (to - 0.2, 0.72)]);
+            p.circle_filled(at(endpoint, 0.5), r.width() * 0.105, c);
         }
         Icon::Select => {
             closed(
