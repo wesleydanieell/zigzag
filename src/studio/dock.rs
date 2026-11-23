@@ -4023,13 +4023,19 @@ impl Studio {
                 ui.push_id(("sequence-object", k, shape.uid), |ui| {
                     ui.scope_builder(egui::UiBuilder::new().max_rect(object_row), |ui| {
                         ui.set_clip_rect(ui.clip_rect().intersect(object_row));
-                        ui.horizontal(|ui| {
-                            // Keep the name next to the color swatch instead of
-                            // centering short labels inside a full-width button.
-                            // The two command icons remain on the same row.
-                            let max_name_width =
-                                (ui.available_width() - 48.0 - 2.0 * ui.spacing().item_spacing.x)
-                                    .max(0.0);
+                        let spacing = ui.spacing().item_spacing.x;
+                        let commands = Rect::from_min_max(
+                            Pos2::new(object_row.right() - 48.0 - spacing, object_row.top()),
+                            object_row.max,
+                        );
+                        let name_rect = Rect::from_min_max(
+                            object_row.min,
+                            Pos2::new(commands.left() - spacing, object_row.bottom()),
+                        );
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(name_rect), |ui| {
+                            // Keep short names next to the swatch, reserving the
+                            // right edge for both commands even when names truncate.
+                            let max_name_width = name_rect.width().max(0.0);
                             let label_width = ui
                                 .painter()
                                 .layout_no_wrap(
@@ -4085,9 +4091,16 @@ impl Studio {
                             if movable && response.clicked() {
                                 pick = Some(vec![i]);
                             }
-                            start_command_ui(ui, &mut shape.params);
-                            end_command_ui(ui, &mut shape.params);
                         });
+                        ui.scope_builder(
+                            egui::UiBuilder::new()
+                                .max_rect(commands)
+                                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                            |ui| {
+                                start_command_ui(ui, &mut shape.params);
+                                end_command_ui(ui, &mut shape.params);
+                            },
+                        );
                     });
                 });
             }
@@ -4844,7 +4857,7 @@ mod tests {
     }
 
     #[test]
-    fn sequence_singletons_share_one_row_at_every_dock_width() {
+    fn sequence_commands_pin_to_right_on_singleton_and_grouped_rows() {
         for width in [200.0, 260.0, 420.0, 470.0] {
             for by_color in [false, true] {
                 for grouped in [false, true] {
@@ -4864,6 +4877,7 @@ mod tests {
                     frame.run_steps(4);
                     frame.state_mut().names[0] =
                         "first with a very long object name that must truncate".into();
+                    frame.state_mut().names[1] = "Short".into();
                     frame.state_mut().view_tools.thread_order = !by_color;
                     let mut h = Harness::builder()
                         .with_size(Vec2::new(width, 500.0))
@@ -4896,7 +4910,25 @@ mod tests {
                     }
                     assert!(object.width() > 30.0);
                     assert!(object.right() <= start.left() && start.right() <= end.left());
-                    assert!(end.right() <= width - 8.0, "{width}: {end:?}");
+                    for (object, (start, end)) in [
+                        "Select sewn object first with a very long object name that must truncate",
+                        "Select sewn object Short",
+                    ]
+                    .into_iter()
+                    .map(|label| h.get_by_label(label))
+                    .zip(
+                        h.query_all_by_label("Start command: Auto")
+                            .zip(h.query_all_by_label("End command: Auto")),
+                    ) {
+                        let (object, start, end) = (object.rect(), start.rect(), end.rect());
+                        assert_eq!(object.center().y, start.center().y);
+                        assert_eq!(object.center().y, end.center().y);
+                        assert!(object.right() <= start.left() && start.right() <= end.left());
+                        assert!(
+                            (end.right() - (width - 8.0)).abs() < 0.1,
+                            "{width}: {end:?}"
+                        );
+                    }
                     h.query_all_by_label("Start command: Auto")
                         .next()
                         .unwrap()
