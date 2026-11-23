@@ -4,7 +4,7 @@
 use super::jef_data::JEF_PALETTE;
 use super::pec_data::PEC_PALETTE;
 use super::preview::{PreviewOptions, render_png};
-use crate::design::Design;
+use crate::design::{Design, PassBoundary};
 use anyhow::Result;
 use std::fmt::Write;
 
@@ -100,7 +100,7 @@ pub fn html(d: &Design, info: &WorksheetInfo) -> Result<String> {
                     .collect()
             })
             .unwrap_or_default();
-        let stop = k > 0 && d.blocks[k - 1].color == blk.color;
+        let stop = d.boundary_before(k) == Some(PassBoundary::StopSameThread);
         let _ = write!(
             rows,
             "<tr><td class=n>{}</td><td><span class=sw style=\"background:{hex}\"></span>{hex}</td><td>{}</td><td>{} {}</td><td class=r>{}</td><td>{}{}</td></tr>",
@@ -183,6 +183,30 @@ mod tests {
     use super::*;
     use crate::design::{Block, Run};
     use crate::geom::P;
+
+    #[test]
+    fn worksheet_labels_only_same_thread_pass_boundaries() {
+        for colors in [[[0; 3], [0; 3], [255; 3]], [[0; 3], [255; 3], [0; 3]]] {
+            let d = Design {
+                blocks: colors
+                    .into_iter()
+                    .map(|color| Block {
+                        color,
+                        runs: vec![Run {
+                            pts: vec![P::new(0.0, 0.0), P::new(20.0, 10.0)],
+                            trim_before: false,
+                        }],
+                    })
+                    .collect(),
+                ..Default::default()
+            };
+            let h = html(&d, &WorksheetInfo::default()).unwrap();
+            assert_eq!(
+                h.matches("<b>Stop</b> (same thread) · ").count(),
+                usize::from(colors[0] == colors[1])
+            );
+        }
+    }
 
     #[test]
     fn worksheet_lists_every_color_stop_with_thread_names() {

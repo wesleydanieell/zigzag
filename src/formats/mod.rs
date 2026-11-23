@@ -639,6 +639,67 @@ mod lock_tests {
     use super::*;
     use crate::design::{Block, Run};
 
+    #[test]
+    fn pass_boundaries_share_opcodes_and_roundtrip_geometry() {
+        for colors in [[[0; 3], [0; 3], [255; 3]], [[0; 3], [255; 3], [0; 3]]] {
+            for trim_before in [false, true] {
+                let d = Design {
+                    blocks: colors
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, color)| Block {
+                            color,
+                            runs: vec![Run {
+                                pts: vec![
+                                    P::new(i as f64 * 100.0, 0.0),
+                                    P::new(i as f64 * 100.0 + 20.0, 10.0),
+                                ],
+                                trim_before,
+                            }],
+                        })
+                        .collect(),
+                    ..Default::default()
+                };
+                for cmds in [pes::stream(&d), dst::stream(&d)] {
+                    let ops: Vec<_> = cmds.iter().map(|c| c.op).collect();
+                    assert_eq!(ops.iter().filter(|&&op| op == Op::ColorChange).count(), 2);
+                    assert_eq!(
+                        ops.iter().filter(|&&op| op == Op::Trim).count(),
+                        3,
+                        "two transitions plus independent final trim"
+                    );
+                    for (i, op) in ops.iter().enumerate() {
+                        if *op == Op::ColorChange {
+                            assert_eq!(ops[i - 1], Op::Trim);
+                        }
+                    }
+                }
+                for ext in ["pes", "dst"] {
+                    let back =
+                        read::read_stitch_file(&write_format(&d, ext).unwrap(), ext).unwrap();
+                    assert_eq!(back.blocks.len(), 3);
+                    // DST has no RGB; check each pass's geometry, allowing file translation.
+                    let origin = back.blocks[0].runs[0][0];
+                    for (i, block) in back.blocks.iter().enumerate() {
+                        let points: Vec<_> = block.runs.iter().flatten().copied().collect();
+                        for expected in &d.blocks[i].runs[0].pts {
+                            assert!(
+                                points.iter().any(|p| (*p - origin).dist(*expected) <= 1.0),
+                                "{ext} pass {i}: {points:?}"
+                            );
+                        }
+                    }
+                    if ext == "pes" {
+                        assert_eq!(
+                            back.blocks[0].color == back.blocks[1].color,
+                            colors[0] == colors[1]
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// Two runs with a cut between them, the first sewn in direction `dir`.
     fn two_runs(dir: P) -> Design {
         let a: Vec<P> = (0..5).map(|k| dir * (k as f64 * 25.0)).collect();

@@ -34,6 +34,14 @@ pub struct Block {
     pub runs: Vec<Run>,
 }
 
+/// Machine-independent event before a planned sewing pass.
+/// Both events currently lower to the same color-change opcode in PES/DST.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PassBoundary {
+    StopSameThread,
+    ChangeThread,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Design {
     pub name: String,
@@ -6011,6 +6019,20 @@ pub fn default_satin_width(shape: &Shape) -> f64 {
 }
 
 impl Design {
+    /// Event before pass `block_index`, derived from adjacent planned colors.
+    /// Returns `None` for the first pass or an index outside the plan.
+    /// This is not Tajima UI's "Stop Command" end-slot field name and does
+    /// not promise a dedicated machine-specific Stop encoding.
+    pub fn boundary_before(&self, block_index: usize) -> Option<PassBoundary> {
+        let previous = self.blocks.get(block_index.checked_sub(1)?)?;
+        let current = self.blocks.get(block_index)?;
+        Some(if previous.color == current.color {
+            PassBoundary::StopSameThread
+        } else {
+            PassBoundary::ChangeThread
+        })
+    }
+
     pub fn bounds(&self) -> Bounds {
         let mut b = Bounds::empty();
         for blk in &self.blocks {
@@ -6261,6 +6283,34 @@ mod tests {
     /// Overlap removal is cached per shape: after moving one object, the
     /// cached plan must still equal a plan made from scratch (what moved
     /// and what it overlapped are redone; the rest is reused).
+    #[test]
+    fn planned_pass_boundaries_are_adjacent_and_derived() {
+        use PassBoundary::{ChangeThread, StopSameThread};
+        let mut d = Design::default();
+        assert_eq!(d.boundary_before(0), None);
+        assert_eq!(d.boundary_before(usize::MAX), None);
+        for colors in [[[0; 3], [0; 3], [255; 3]], [[0; 3], [255; 3], [0; 3]]] {
+            d.blocks.clear();
+            for color in colors {
+                d.blocks.push(Block {
+                    color,
+                    runs: vec![],
+                });
+                assert_eq!(d.boundary_before(0), None);
+                assert_eq!(d.boundary_before(d.blocks.len()), None);
+            }
+            assert_eq!(
+                d.boundary_before(1),
+                Some(if colors[0] == colors[1] {
+                    StopSameThread
+                } else {
+                    ChangeThread
+                })
+            );
+            assert_eq!(d.boundary_before(2), Some(ChangeThread));
+        }
+    }
+
     #[test]
     fn dropping_a_shapes_stitches_leaves_the_others_as_they_were() {
         // Three squares in one thread: one block, sewn one after another.
@@ -7234,6 +7284,7 @@ mod tests {
         // 3 mm apart: cut by default.
         let d = plan("p", &[a.clone(), b.clone()], &PlanOptions::default());
         assert_eq!(d.blocks.len(), 1);
+        assert_eq!(d.boundary_before(1), None);
         assert_eq!(d.trim_count(), 1);
         // Connect gaps up to 15 mm: sewn across, no cut.
         let opt = PlanOptions {
@@ -7255,6 +7306,7 @@ mod tests {
         assert_eq!(d.blocks.len(), 2);
         assert_eq!(d.blocks[0].color, d.blocks[1].color);
         assert_eq!(d.block_shapes, vec![vec![0], vec![1]]);
+        assert_eq!(d.boundary_before(1), Some(PassBoundary::StopSameThread));
     }
 
     /// One object in two separate 10 mm squares, `gap` apart.
