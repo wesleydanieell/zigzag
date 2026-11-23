@@ -238,6 +238,7 @@ pub struct DockUi {
     /// Layers being dragged to another place in the sewing order: the
     /// objects (by uid), and what the copy at the pointer says.
     pub(crate) layer_drag: Option<(Vec<usize>, String)>,
+    layer_drag_owner: Option<&'static str>,
 }
 
 #[derive(Clone, Copy)]
@@ -2525,6 +2526,9 @@ impl Studio {
                     if resp.drag_started_by(egui::PointerButton::Primary)
                         && gutter.is_none()
                         && !editing
+                        && !hidden
+                        && !locked
+                        && kind != Kind::Skip
                     {
                         drag_start = Some(if selected && all_sel.len() > 1 {
                             (
@@ -2584,7 +2588,7 @@ impl Studio {
                     }
                 }
             });
-        self.layer_drag(ui, drag_start, drop);
+        self.layer_drag(ui, "objects", drag_start, drop);
         if let Some(i) = clicked {
             if toggle {
                 self.toggle_selected(i);
@@ -2681,16 +2685,27 @@ impl Studio {
     fn layer_drag(
         &mut self,
         ui: &egui::Ui,
+        owner: &'static str,
         start: Option<(Vec<usize>, String)>,
         drop: Option<(usize, f32, f32)>,
     ) {
         if let Some((moving, label)) = start {
-            let uids = moving
+            let uids: Vec<_> = moving
                 .iter()
                 .filter_map(|&i| self.doc.shapes.get(i))
+                .filter(|s| {
+                    !s.params.hidden() && !s.params.locked() && s.params.kind != Some(Kind::Skip)
+                })
                 .map(|s| s.uid)
                 .collect();
+            if uids.is_empty() {
+                return;
+            }
             self.dock_ui.layer_drag = Some((uids, label));
+            self.dock_ui.layer_drag_owner = Some(owner);
+        }
+        if self.dock_ui.layer_drag_owner != Some(owner) {
+            return;
         }
         let Some((uids, label)) = self.dock_ui.layer_drag.clone() else {
             return;
@@ -3792,14 +3807,28 @@ impl Studio {
             caption(ui, "Nothing to sew yet.");
             return;
         }
+        let mut drag_start = None;
+        let mut drop = None;
         egui::ScrollArea::vertical()
             .id_salt("sequence-objects")
             .max_height(theme::ROW_H * 10.0)
             .auto_shrink([false, true])
-            .show(ui, |ui| self.sequence_rows(ui));
+            .show(ui, |ui| self.sequence_rows(ui, &mut drag_start, &mut drop));
+        self.layer_drag(ui, "sequence", drag_start, drop);
     }
 
-    fn sequence_rows(&mut self, ui: &mut egui::Ui) {
+    fn sequence_rows(
+        &mut self,
+        ui: &mut egui::Ui,
+        drag_start: &mut Option<(Vec<usize>, String)>,
+        drop: &mut Option<(usize, f32, f32)>,
+    ) {
+        let over = self
+            .dock_ui
+            .layer_drag
+            .as_ref()
+            .and_then(|_| ui.input(|i| i.pointer.interact_pos()))
+            .filter(|q| ui.clip_rect().contains(*q));
         let p = pal_ui(ui);
         let selected = self.sel_indices();
         let mut pick = None;
@@ -3941,6 +3970,10 @@ impl Studio {
                 let Some(shape) = self.doc.shapes.get_mut(i) else {
                     continue;
                 };
+                // A background replan may still contain a just-hidden object.
+                if shape.params.hidden() || shape.params.kind == Some(Kind::Skip) {
+                    continue;
+                }
                 let name = self
                     .names
                     .get(i)
@@ -3955,9 +3988,36 @@ impl Studio {
                         let response = ui
                             .add_sized(
                                 [name_width, 24.0],
-                                egui::Button::selectable(selected.contains(&i), &name).truncate(),
+                                egui::Button::selectable(selected.contains(&i), &name)
+                                    .sense(Sense::click_and_drag())
+                                    .truncate(),
                             )
-                            .on_hover_text(&name);
+                            .on_hover_text(format!("{name}\nDrag to change sewing order"));
+                        let movable = !shape.params.hidden()
+                            && !shape.params.locked()
+                            && shape.params.kind != Some(Kind::Skip);
+                        if movable && response.hovered() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                        }
+                        if movable && response.drag_started_by(egui::PointerButton::Primary) {
+                            *drag_start = Some((vec![i], name.clone()));
+                        }
+                        if let Some(q) = over.filter(|q| response.rect.contains(*q)) {
+                            let above = q.y < response.rect.center().y;
+                            let y = if above {
+                                response.rect.top()
+                            } else {
+                                response.rect.bottom()
+                            };
+                            *drop = Some((if above { i } else { i + 1 }, y, response.rect.left()));
+                            ui.painter().line_segment(
+                                [
+                                    Pos2::new(response.rect.left(), y),
+                                    Pos2::new(response.rect.right(), y),
+                                ],
+                                Stroke::new(2.0, p.accent),
+                            );
+                        }
                         response.widget_info(|| {
                             egui::WidgetInfo::selected(
                                 egui::Role::Button,
@@ -3966,13 +4026,40 @@ impl Studio {
                                 format!("Select sewn object {name}"),
                             )
                         });
-                        if response.clicked() {
+                        if movable && response.clicked() {
                             pick = Some(vec![i]);
                         }
                         start_command_ui(ui, &mut shape.params);
                         end_command_ui(ui, &mut shape.params);
                     });
                 });
+            }
+        }
+        // A small end target stays inside the scroll viewport: outside drops
+        // never reorder. The bottom half of the last name also means after it.
+        let (end, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 8.0), Sense::hover());
+        if over.is_some_and(|q| end.contains(q)) {
+            *drop = Some((self.doc.shapes.len(), end.top(), end.left() + 20.0));
+            ui.painter().line_segment(
+                [
+                    Pos2::new(end.left() + 20.0, end.top()),
+                    Pos2::new(end.right(), end.top()),
+                ],
+                Stroke::new(2.0, p.accent),
+            );
+        }
+        if let Some(q) = over {
+            let clip = ui.clip_rect();
+            let by = if q.y < clip.top() + 22.0 {
+                6.0
+            } else if q.y > clip.bottom() - 22.0 {
+                -6.0
+            } else {
+                0.0
+            };
+            if by != 0.0 {
+                ui.scroll_with_delta(Vec2::new(0.0, by));
+                ui.ctx().request_repaint();
             }
         }
         if let Some(v) = pick {
@@ -4363,6 +4450,188 @@ mod tests {
     use super::*;
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable;
+
+    #[test]
+    fn sequence_objects_reorder_source_and_passes_with_one_undo() {
+        use zigzag::params::{EndCommand, StartCommand};
+        for by_color in [false, true] {
+            for same_color in [false, true] {
+                let middle = if same_color { "#aa0000" } else { "#00aa00" };
+                let first = if same_color { "#0000aa" } else { "#aa0000" };
+                let svg = format!(
+                    r##"<svg xmlns="http://www.w3.org/2000/svg" width="80mm" height="20mm" viewBox="0 0 80 20">
+                    <path id="first_run" d="M0 0 L10 0" stroke="{first}" fill="none"/>
+                    <path id="second_run" d="M20 0 L30 0" stroke="{middle}" fill="none"/>
+                    <path id="third_run" d="M40 0 L50 0" stroke="#aa0000" fill="none"/>
+                </svg>"##
+                );
+                let mut h = Harness::builder()
+                    .with_size(Vec2::new(1400.0, 1000.0))
+                    .build_ui_state(
+                        |ui, s: &mut Studio| s.frame(ui),
+                        Studio::with_file(None, None),
+                    );
+                let s = h.state_mut();
+                s.set_document(
+                    zigzag::document::Document::from_svg(&svg, "reorder", None).unwrap(),
+                );
+                if !s.dock.visible(PanelId::Threads) {
+                    s.dock.toggle(PanelId::Threads);
+                }
+                s.dock.move_panel(PanelId::Threads, Place::Left, None);
+                s.view_tools.thread_order = !by_color;
+                h.run_steps(5);
+                let original: Vec<_> = h.state().doc.shapes.iter().map(|s| s.uid).collect();
+                assert_ne!(original[0], original[1]);
+                let drag = |h: &mut Harness<'_, Studio>, cancel: bool, outside: bool| {
+                    let from = h.get_by_label("Select sewn object third").rect().center();
+                    let r = h.get_by_label("Select sewn object second").rect();
+                    let to = if outside {
+                        Pos2::new(700.0, 800.0)
+                    } else {
+                        r.center() - Vec2::new(0.0, 6.0)
+                    };
+                    h.hover_at(from);
+                    h.run_steps(1);
+                    h.drag_at(from);
+                    h.run_steps(1);
+                    h.hover_at(to);
+                    h.run_steps(2);
+                    assert!(h.state().dock_ui.layer_drag.is_some());
+                    if cancel {
+                        h.key_press(egui::Key::Escape);
+                        h.run_steps(2);
+                    }
+                    h.drop_at(to);
+                    h.run_steps(4);
+                };
+                let pes_before = zigzag::formats::pes::write_pes(&h.state().design);
+                let dst_before = zigzag::formats::dst::write_dst(&h.state().design);
+                let undo = h.state().undo.len();
+                drag(&mut h, true, false);
+                drag(&mut h, false, true);
+                assert_eq!(h.state().undo.len(), undo);
+                assert_eq!(
+                    h.state()
+                        .doc
+                        .shapes
+                        .iter()
+                        .map(|s| s.uid)
+                        .collect::<Vec<_>>(),
+                    original
+                );
+                // A click still synchronizes the canvas selection; dragging only
+                // moves this object, even when other objects are selected.
+                h.get_by_label("Select sewn object third").click();
+                h.run_steps(2);
+                assert_eq!(h.state().sel_indices(), vec![2]);
+                drag(&mut h, false, false);
+                assert_eq!(h.state().undo.len(), undo + 1);
+                assert_eq!(
+                    h.state()
+                        .doc
+                        .shapes
+                        .iter()
+                        .map(|s| s.uid)
+                        .collect::<Vec<_>>(),
+                    [original[0], original[2], original[1]]
+                );
+                assert_eq!(h.state().sel_indices(), vec![1]);
+                assert!(
+                    h.state()
+                        .doc
+                        .shapes
+                        .iter()
+                        .all(|s| s.params.end_command() == EndCommand::Automatic)
+                );
+                assert_eq!(
+                    h.state().design.block_shapes,
+                    if same_color {
+                        vec![vec![0], vec![1, 2]]
+                    } else {
+                        vec![vec![0, 1], vec![2]]
+                    }
+                );
+                let pes_after = zigzag::formats::pes::write_pes(&h.state().design);
+                let dst_after = zigzag::formats::dst::write_dst(&h.state().design);
+                assert!(pes_after.starts_with(b"#PES"));
+                assert!(dst_after.starts_with(b"LA:"));
+                assert_ne!(pes_before, pes_after);
+                assert_ne!(dst_before, dst_after);
+                h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+                h.run_steps(4);
+                assert_eq!(
+                    h.state()
+                        .doc
+                        .shapes
+                        .iter()
+                        .map(|s| s.uid)
+                        .collect::<Vec<_>>(),
+                    original
+                );
+                // Manual commands travel with the UID and split actual same-color passes.
+                h.state_mut().doc.shapes[2].params.trim_before = Some(true);
+                h.state_mut().doc.shapes[2].params.stop = Some(true);
+                h.run_steps(4);
+                let undo = h.state().undo.len();
+                drag(&mut h, false, false);
+                assert_eq!(h.state().undo.len(), undo + 1);
+                let moved = &h.state().doc.shapes[1];
+                assert_eq!(moved.uid, original[2]);
+                assert_eq!(moved.params.start_command(), StartCommand::Trim);
+                assert_eq!(moved.params.end_command(), EndCommand::Stop);
+                if same_color {
+                    assert_eq!(
+                        h.state().design.block_shapes,
+                        vec![vec![0], vec![1], vec![2]]
+                    );
+                }
+                // Locked names cannot initiate a drag.
+                h.state_mut().doc.shapes[1].params.lock = Some(true);
+                h.run_steps(4);
+                let from = h.get_by_label("Select sewn object third").rect().center();
+                h.hover_at(from);
+                h.run_steps(1);
+                h.drag_at(from);
+                h.hover_at(from + Vec2::new(0.0, 35.0));
+                h.run_steps(2);
+                assert!(h.state().dock_ui.layer_drag.is_none());
+                h.drop_at(from);
+                h.run_steps(2);
+                h.state_mut().doc.shapes[1].params.lock = None;
+                // A lower-half drop moves after the current target, with indices
+                // resolved in the newly planned order rather than the old rows.
+                h.run_steps(4);
+                let from = h.get_by_label("Select sewn object third").rect().center();
+                let last = h.get_by_label("Select sewn object second").rect();
+                h.hover_at(from);
+                h.run_steps(1);
+                h.drag_at(from);
+                h.run_steps(1);
+                let to = last.center() + Vec2::new(0.0, 6.0);
+                h.hover_at(to);
+                h.run_steps(2);
+                h.drop_at(to);
+                h.run_steps(4);
+                assert_eq!(
+                    h.state()
+                        .doc
+                        .shapes
+                        .iter()
+                        .map(|s| s.uid)
+                        .collect::<Vec<_>>(),
+                    original
+                );
+                h.state_mut().doc.shapes[2].params.hide = Some(true);
+                h.run_steps(4);
+                assert!(h.query_by_label("Select sewn object third").is_none());
+                h.state_mut().doc.shapes[2].params.hide = None;
+                h.state_mut().doc.shapes[2].params.kind = Some(Kind::Skip);
+                h.run_steps(4);
+                assert!(h.query_by_label("Select sewn object third").is_none());
+            }
+        }
+    }
 
     #[test]
     fn sequence_boundary_commands_follow_sewn_objects_and_undo() {

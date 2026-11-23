@@ -51,3 +51,25 @@ any occurrence's swatch selects all document objects with that RGB and opens
 the picker for global recoloring (including repeated passes). Sewing Order's
 swatch selects and recolors only that pass. Swatch tooltips explain this scope.
 Both lists scroll within ten header-row heights; long names have full tooltips.
+
+Drag an object's name in either Threads view to change the document's source
+sewing order. The accent insertion line shows before/after the target name;
+the floating name previews the single object being moved. Drop on the bottom
+half of the last name, or the small space below the list, to sew it last.
+Hover near the scroll viewport's edges to scroll while dragging. Start/End
+buttons remain separate click targets; clicking a name still selects on canvas.
+Each effective move is one undo step. Escape, dropping outside the name targets
+and end space, or dropping in the same place leaves the document unchanged.
+
+Only the dragged object moves, even with several objects selected. Hidden and
+Skip objects have no sequence rows; locked objects cannot be dragged or selected
+by their name. Commands and selection follow stable object UIDs through moves
+and undo. Layers uses the same structural reorder/history path. No Stop is
+inserted to preserve a former color pass: A–B–A can become A–A–B and merge passes.
+
+The existing planner still applies its travel shortening within stretches of
+three or more eligible same-color objects, and cap ordering when enabled.
+Consequently planned rows may differ from source order under those rules;
+reordering does not disable optimization or change planner/export semantics.
+An object with multiple planned color runs still moves as one source object,
+from any of its occurrences; passes are not independently draggable.
