@@ -29,6 +29,14 @@ second persisted command state. Undo/redo and regeneration use document history;
 commands remain attached to shapes across reorder, not to sequence row numbers.
 Agent `set_object` and `get_design` retain their existing fields.
 
+**Observed in ZigZag code:** `Design::boundary_before(k)` describes the event
+before planned pass k: `StopSameThread` for adjacent identical RGB blocks,
+`ChangeThread` otherwise, and no event for the first or an out-of-range pass.
+These are derived planned events, not encoder opcodes or Tajima UI's "Stop
+Command" end-slot field. Ordinary consecutive same-color objects share a pass;
+an explicit Stop can split them. Advanced visual grouping still merges adjacent
+same-RGB passes without removing the planned boundary.
+
 Export remains unchanged: stops split blocks with the same thread color. The
 existing export stream lowers block boundaries to a trim and color-change opcode,
 including same-thread stops. A dedicated machine-stop encoding is not added here;

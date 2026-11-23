@@ -3848,7 +3848,15 @@ impl Studio {
             crate::threads::color_runs(&self.design.blocks, &self.design.block_shapes, advanced);
         for (k, group) in groups.iter().enumerate() {
             let n = group.stitches;
-            let stop = !advanced && k > 0 && groups[k - 1].color == group.color;
+            let boundary = (!advanced).then(|| self.design.boundary_before(k)).flatten();
+            let stop = boundary == Some(zigzag::design::PassBoundary::StopSameThread);
+            let boundary_hint = match boundary {
+                Some(zigzag::design::PassBoundary::StopSameThread) =>
+                    "Planned stop before this pass, keeping the same thread. Export uses a color-change opcode; machine pause behavior varies.",
+                Some(zigzag::design::PassBoundary::ChangeThread) =>
+                    "Planned thread change before this pass. Export uses a color-change opcode.",
+                None => "",
+            };
             let objects: Vec<_> = group
                 .objects
                 .iter()
@@ -4077,7 +4085,7 @@ impl Studio {
                     rect.top() - theme::space::M,
                 ));
             } else if resp
-                .on_hover_text(format!("Select this pass. Sews: {}", names.join(", ")))
+                .on_hover_text(format!("Select this pass. Sews: {}\n{boundary_hint}", names.join(", ")))
                 .clicked()
             {
                 pick = Some(objects.clone());
@@ -4669,6 +4677,48 @@ mod tests {
     use super::*;
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable;
+
+    #[test]
+    fn pass_boundary_stop_is_only_in_sewing_order_and_survives_svg() {
+        use zigzag::design::PassBoundary::{ChangeThread, StopSameThread};
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="80mm" height="20mm" viewBox="0 0 80 20">
+            <path id="first_run_stop" d="M0 0 L10 0" stroke="#000000" fill="none"/>
+            <path id="second_run" d="M20 0 L30 0" stroke="#000000" fill="none"/>
+            <path id="third_run" d="M40 0 L50 0" stroke="#ffffff" fill="none"/>
+        </svg>"##;
+        let mut doc = zigzag::document::Document::from_svg(svg, "boundaries", None).unwrap();
+        doc.shapes[0].params.stop = Some(true);
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(1400.0, 1000.0))
+            .build_ui_state(
+                |ui, s: &mut Studio| s.frame(ui),
+                Studio::with_file(None, None),
+            );
+        let s = h.state_mut();
+        s.set_document(doc);
+        if !s.dock.visible(PanelId::Threads) {
+            s.dock.toggle(PanelId::Threads);
+        }
+        s.dock.move_panel(PanelId::Threads, Place::Left, None);
+        s.view_tools.thread_order = true;
+        s.view_tools.thread_advanced = true;
+        h.run_steps(5);
+        assert_eq!(h.state().design.boundary_before(1), Some(StopSameThread));
+        assert_eq!(h.state().design.boundary_before(2), Some(ChangeThread));
+        assert_eq!(h.query_all_by_label_contains("(stop)").count(), 1);
+        h.state_mut().view_tools.thread_order = false;
+        h.run_steps(3);
+        assert_eq!(h.query_all_by_label_contains("(stop)").count(), 0);
+        assert!(h.query_by_label("End command: Stop").is_some());
+        let saved = h.state().doc.to_svg().unwrap();
+        let doc = zigzag::document::Document::from_svg(&saved, "boundaries", None).unwrap();
+        h.state_mut().set_document(doc);
+        h.state_mut().view_tools.thread_order = true;
+        h.run_steps(5);
+        assert_eq!(h.state().design.boundary_before(1), Some(StopSameThread));
+        assert_eq!(h.state().design.boundary_before(2), Some(ChangeThread));
+        assert_eq!(h.query_all_by_label_contains("(stop)").count(), 1);
+    }
 
     #[test]
     fn layers_columns_keep_artwork_names_and_counts_apart() {
