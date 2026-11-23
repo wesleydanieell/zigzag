@@ -28,6 +28,8 @@ pub struct ViewTools {
     /// View › Density Map and View › Sewing Order.
     pub density: bool,
     pub order_labels: bool,
+    /// Session-only selected ownership connection overlay.
+    pub selected_connections: bool,
     /// The next click on the canvas places this marker on the selected
     /// object (the Stitch panel's Start and End buttons).
     pub marker_pick: Option<Marker>,
@@ -89,6 +91,7 @@ impl Default for ViewTools {
             grid: false,
             density: false,
             order_labels: false,
+            selected_connections: false,
             marker_pick: None,
             marker_drag: None,
             points: false,
@@ -1054,6 +1057,48 @@ mod tests {
         h.run_steps(1);
         assert_eq!(h.state().doc.settings.connect_mm, 0.0);
         assert_eq!(h.state().design.trim_count(), 1);
+    }
+
+    #[test]
+    fn selected_connections_popup_is_session_only() {
+        use egui_kittest::kittest::Queryable;
+        let mut h = studio(Some("badge.svg"));
+        let svg = h.state().doc.to_svg().unwrap();
+        h.state_mut().plan_now();
+        let owner = h.state().design.sew_order[0];
+        let uid = h.state().doc.shapes[owner].uid;
+        h.state_mut().selected = Some(uid);
+        assert!(h.state().connection_preview().is_none());
+        assert!(!h.state().view_tools.selected_connections);
+        h.get_by_label("View Options").click();
+        h.run_steps(2);
+        h.get_by_label("Selected object connections").click();
+        h.run_steps(2);
+        assert!(h.state().view_tools.selected_connections);
+        assert!(h.state().connection_preview().is_some());
+        h.state_mut().playing = true;
+        assert!(h.state().connection_preview().is_none());
+        h.state_mut().playing = false;
+        h.state_mut().view_tools.marker_drag = Some(Marker::Start);
+        assert!(h.state().connection_preview().is_none());
+        h.state_mut().view_tools.marker_drag = None;
+        h.state_mut().doc.shapes[owner].params.hide = Some(true);
+        assert!(h.state().connection_preview().is_none());
+        h.state_mut().doc.shapes[owner].params.hide = None;
+        h.state_mut().selected = Some(usize::MAX);
+        assert!(h.state().connection_preview().is_none());
+        h.state_mut().selected = Some(uid);
+        let other = (owner + 1) % h.state().doc.shapes.len();
+        h.state_mut().set_selection(&[owner, other]);
+        assert!(h.state().connection_preview().is_none());
+        h.state_mut().set_selection(&[owner]);
+        h.state_mut().replan();
+        h.state_mut().plan_now();
+        assert!(h.state().connection_preview().is_some());
+        assert_eq!(h.state().doc.to_svg().unwrap(), svg);
+        h.get_by_label("Selected object connections").click();
+        h.run_steps(2);
+        assert!(!h.state().view_tools.selected_connections);
     }
 
     #[test]

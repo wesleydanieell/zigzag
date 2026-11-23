@@ -98,6 +98,8 @@ impl Studio {
                         {
                             self.prefs.save();
                         }
+                        ui.checkbox(&mut self.view_tools.selected_connections, "Selected object connections")
+                            .on_hover_text("Planned schematic: blue In, Out, dashed neutral breaks. Select one sewn object.");
                         ui.horizontal(|ui| {
                             ui.color_edit_button_srgb(&mut self.doc.settings.cloth);
                             ui.label("Fabric color");

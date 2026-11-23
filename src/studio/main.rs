@@ -17,6 +17,7 @@ mod canvas;
 mod capture;
 mod chrome;
 mod commands;
+mod connection_preview;
 mod crash;
 mod cursors;
 mod curvature;

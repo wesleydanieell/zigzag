@@ -397,6 +397,10 @@ impl Studio {
                     s.account.step = crate::account::Step::Code("you@example.com".into());
                 }
                 Ok("select") => s.select_index(Some(0)),
+                Ok("connections") => {
+                    s.select_index(Some(1));
+                    s.view_tools.selected_connections = true;
+                }
                 Ok("issues") => s.open_issues = true,
                 // (A selection box, part way through being dragged out.)
                 Ok("marquee") => s.marquee = Some((P::new(-220.0, -120.0), P::new(60.0, 90.0))),
@@ -3108,6 +3112,7 @@ impl Studio {
         if self.view_tools.density {
             self.density_map().draw(&painter, rect, &self.view);
         }
+        self.draw_connections(&painter, rect);
         if self.view_tools.order_labels {
             self.draw_order_labels(&painter, rect);
         }
