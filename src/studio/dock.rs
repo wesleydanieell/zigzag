@@ -3865,14 +3865,13 @@ impl Studio {
             let run_id = ui.make_persistent_id((
                 "advanced-color-run",
                 objects.first().map(|&i| self.doc.shapes[i].uid),
-                group.color,
             ));
             let mut expanded = ui
                 .ctx()
                 .data_mut(|d| d.get_persisted::<bool>(run_id))
                 .unwrap_or(true);
             let (row, _) = ui.allocate_exact_size(
-                Vec2::new(ui.available_width(), theme::ROW_H.max(24.0)),
+                Vec2::new(ui.available_width(), theme::ROW_H),
                 Sense::hover(),
             );
             // Keep a distinct pass target; reserve the rest for the same object
@@ -3889,7 +3888,10 @@ impl Studio {
                 Rect::from_min_max(Pos2::new(rect.left() + 40.0, rect.top()), rect.max)
             };
             if advanced {
-                let disclosure = Rect::from_min_size(rect.min, Vec2::new(18.0, rect.height()));
+                let disclosure = Rect::from_min_size(
+                    rect.min,
+                    Vec2::new(crate::threads::THREAD_INDENT, rect.height()),
+                );
                 let response = ui.interact(disclosure, run_id.with("disclosure"), Sense::click());
                 response.widget_info(|| {
                     egui::WidgetInfo::labeled(
@@ -3970,11 +3972,14 @@ impl Studio {
             } else {
                 name.clone()
             };
-            let preview_space = if singleton { 0.0 } else { 26.0 };
+            let preview_space = if singleton { 0.0 } else { 24.0 };
             if !singleton {
                 let preview = Rect::from_center_size(
-                    Pos2::new(sw.right() + 14.0, rect.center().y),
-                    Vec2::splat(22.0),
+                    Pos2::new(
+                        sw.right() + theme::space::XS + crate::threads::THREAD_PREVIEW / 2.0,
+                        rect.center().y,
+                    ),
+                    Vec2::splat(crate::threads::THREAD_PREVIEW),
                 );
                 crate::shape_thumbnail::paint(
                     painter,
@@ -3983,40 +3988,51 @@ impl Studio {
                     true,
                 );
             }
+            let count = if stop {
+                format!("(stop) · {}", fmt_int(n))
+            } else {
+                fmt_int(n)
+            };
+            let count_width = painter
+                .layout_no_wrap(count.clone(), egui::FontId::proportional(11.0), p.secondary)
+                .size()
+                .x;
             let label_rect = Rect::from_min_max(
                 Pos2::new(sw.right() + theme::space::S + preview_space, rect.top()),
                 Pos2::new(
                     rect.right()
                         - if singleton {
                             0.0
-                        } else if stop {
-                            96.0
                         } else {
-                            48.0
+                            count_width + theme::space::S
                         },
                     rect.bottom(),
                 ),
             );
             if !singleton || header_width > 40.0 {
-                painter.with_clip_rect(label_rect).text(
-                    Pos2::new(
-                        sw.right() + theme::space::S + preview_space,
-                        rect.center().y,
-                    ),
-                    egui::Align2::LEFT_CENTER,
-                    if singleton { &label } else { &name },
+                let mut job = egui::text::LayoutJob::simple_singleline(
+                    if singleton {
+                        label.clone()
+                    } else {
+                        name.clone()
+                    },
                     egui::FontId::proportional(12.0),
                     if on { p.accent } else { p.text },
+                );
+                job.wrap.max_width = label_rect.width().max(0.0);
+                job.wrap.max_rows = 1;
+                job.wrap.break_anywhere = true;
+                let galley = painter.layout_job(job);
+                painter.with_clip_rect(label_rect).galley(
+                    Pos2::new(label_rect.left(), rect.center().y - galley.size().y / 2.0),
+                    galley,
+                    p.text,
                 );
                 if !singleton {
                     painter.text(
                         Pos2::new(rect.right() - 4.0, rect.center().y),
                         egui::Align2::RIGHT_CENTER,
-                        if stop {
-                            format!("(stop) · {}", fmt_int(n))
-                        } else {
-                            fmt_int(n)
-                        },
+                        &count,
                         egui::FontId::proportional(11.0),
                         p.secondary,
                     );
@@ -4086,9 +4102,14 @@ impl Studio {
                 let object_row = if singleton {
                     Rect::from_min_max(Pos2::new(rect.right(), row.top()), row.max)
                 } else {
-                    let (r, _) = ui
-                        .allocate_exact_size(Vec2::new(ui.available_width(), 24.0), Sense::hover());
-                    Rect::from_min_max(Pos2::new(r.left() + 20.0, r.top()), r.max)
+                    let (r, _) = ui.allocate_exact_size(
+                        Vec2::new(ui.available_width(), theme::ROW_H),
+                        Sense::hover(),
+                    );
+                    Rect::from_min_max(
+                        Pos2::new(r.left() + crate::threads::THREAD_CHILD_OFFSET, r.top()),
+                        r.max,
+                    )
                 };
                 let row_key = if advanced {
                     run_id
@@ -4098,7 +4119,8 @@ impl Studio {
                 ui.push_id(("sequence-object", row_key, shape.uid), |ui| {
                     ui.scope_builder(egui::UiBuilder::new().max_rect(object_row), |ui| {
                         ui.set_clip_rect(ui.clip_rect().intersect(object_row));
-                        let spacing = ui.spacing().item_spacing.x;
+                        ui.spacing_mut().item_spacing.x = theme::space::XS;
+                        let spacing = theme::space::XS;
                         let commands = Rect::from_min_max(
                             Pos2::new(object_row.right() - 48.0 - spacing, object_row.top()),
                             object_row.max,
@@ -4109,7 +4131,12 @@ impl Studio {
                         );
                         crate::shape_thumbnail::paint(ui.painter(), preview, &[shape], true);
                         let name_rect = Rect::from_min_max(
-                            Pos2::new(object_row.left() + 24.0, object_row.top()),
+                            Pos2::new(
+                                object_row.left()
+                                    + crate::threads::THREAD_PREVIEW
+                                    + theme::space::S,
+                                object_row.top(),
+                            ),
                             Pos2::new(commands.left() - spacing, object_row.bottom()),
                         );
                         ui.scope_builder(egui::UiBuilder::new().max_rect(name_rect), |ui| {
@@ -4128,7 +4155,7 @@ impl Studio {
                             let name_width = (label_width + 32.0).min(max_name_width);
                             let response = ui
                                 .add_sized(
-                                    [name_width, 24.0],
+                                    [name_width, theme::ROW_H],
                                     egui::Button::selectable(selected.contains(&i), &name)
                                         .sense(Sense::click_and_drag())
                                         .truncate(),

@@ -286,6 +286,13 @@ pub fn swatch(ui: &mut egui::Ui, c: [u8; 3], size: f32, selected: bool) -> egui:
 /// Content width of the thread color picker.
 pub(crate) const PICKER_W: f32 = 252.0;
 
+// Threads-only metrics: one hierarchy step and a shared artwork column.
+pub(crate) const THREAD_INDENT: f32 = 16.0;
+pub(crate) const THREAD_PREVIEW: f32 = 20.0;
+// Child artwork starts one hierarchy level after the parent artwork column.
+pub(crate) const THREAD_CHILD_OFFSET: f32 =
+    2.0 * THREAD_INDENT + crate::theme::LIST_SWATCH + 2.0 * crate::theme::space::XS;
+
 impl Studio {
     /// Illustrator-style color picker for the selection's thread: the
     /// nearest real threads, a palette to pick from, and a small custom
@@ -533,18 +540,18 @@ impl Studio {
                         let id = egui::Id::unique(("simple-thread-expanded", color));
                         let mut expanded = ui.ctx().data_mut(|d| d.get_persisted::<bool>(id)).unwrap_or(false);
                         ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = crate::theme::space::XS;
                             let toggle = crate::theme::icon_button(
                                 ui,
                                 if expanded { crate::icons::Icon::ChevronDown } else { crate::icons::Icon::ChevronRight },
                                 &format!("Toggle objects for RGB {color:?}"),
                                 false,
-                                20.0,
+                                THREAD_INDENT,
                             );
                             if toggle.clicked() {
                                 expanded = !expanded;
                                 ui.ctx().data_mut(|d| d.insert_persisted(id, expanded));
                             }
-                            self.thread_preview(ui, &objects, 22.0);
                             let response = swatch(ui, color, crate::theme::LIST_SWATCH, false);
                             response.widget_info(|| egui::WidgetInfo::labeled(
                                 egui::Role::Button, true, format!("Thread color RGB {color:?}"),
@@ -553,6 +560,8 @@ impl Studio {
                                 self.set_selection(&objects);
                                 self.open_picker(ui.next_widget_position(), None);
                             }
+                            self.thread_preview(ui, &objects, THREAD_PREVIEW);
+                            ui.add_space(crate::theme::space::S - crate::theme::space::XS);
                             let (_, name, number) = nearest(self.view_tools.brand, color);
                             let name = label(name, number);
                             let on = selected.len() == objects.len()
@@ -575,8 +584,9 @@ impl Studio {
                             for &i in &objects {
                                 ui.push_id(self.doc.shapes[i].uid, |ui| {
                                     ui.horizontal(|ui| {
-                                        ui.add_space(18.0);
-                                        self.thread_preview(ui, &[i], 20.0);
+                                        ui.spacing_mut().item_spacing.x = crate::theme::space::S;
+                                        ui.add_space(THREAD_CHILD_OFFSET);
+                                        self.thread_preview(ui, &[i], THREAD_PREVIEW);
                                         let name = self.names.get(i).cloned().unwrap_or_else(|| format!("Object {}", i + 1));
                                         let response = ui.add_sized([ui.available_width(), 24.0], egui::Button::selectable(selected.contains(&i), &name).truncate());
                                         response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected.contains(&i), format!("Select thread object {name}")));
@@ -1112,7 +1122,7 @@ mod tests {
 
     #[test]
     fn thumbnail_rows_fit_narrow_docks_in_both_themes() {
-        for width in [200.0, 260.0] {
+        for width in [200.0, 260.0, 420.0] {
             for dark in [false, true] {
                 let mut frame = studio();
                 frame.state_mut().view_tools.thread_order = false;
@@ -1130,13 +1140,52 @@ mod tests {
                         frame.state_mut(),
                     );
                 h.run_steps(3);
-                for node in h.query_all_by_label_contains("Thread color RGB") {
-                    assert!(node.rect().right() <= width);
-                }
+                assert!(h.query_by_label_contains("Select thread object").is_none());
+                let (color, objects, _) = h.state().design_threads()[0].clone();
+                let toggle = format!("Toggle objects for RGB {color:?}");
+                let swatch = h
+                    .get_by_label(&format!("Thread color RGB {color:?}"))
+                    .rect();
+                let disclosure = h.get_by_label(&toggle).rect();
+                assert_eq!(swatch.width(), 16.0);
+                assert_eq!(swatch.left() - disclosure.right(), crate::theme::space::XS);
+                let (_, name, number) = nearest(h.state().view_tools.brand, color);
+                let parent = h.get_by_label(&label(name, number)).rect();
+                assert_eq!(parent.left() - swatch.right(), 32.0);
+                assert!(parent.width() >= 40.0 && parent.right() <= width);
+                h.get_by_label(&toggle).click();
+                h.run_steps(3);
+                let object_label = format!("Select thread object {}", h.state().names[objects[0]]);
+                let child = h.get_by_label(&object_label).rect();
+                assert_eq!(
+                    child.left() - disclosure.left(),
+                    THREAD_CHILD_OFFSET + THREAD_PREVIEW + crate::theme::space::S
+                );
+                assert!(child.right() <= width);
+                h.get_by_label(&object_label).click();
+                h.run_steps(2);
+                assert_eq!(h.state().sel_indices(), vec![objects[0]]);
                 h.state_mut().view_tools.thread_advanced = true;
                 h.run_steps(3);
-                for node in h.query_all_by_label_contains("End command:") {
-                    assert!(node.rect().right() <= width);
+                let advanced_child = h
+                    .get_by_label(&format!(
+                        "Select sewn object {}",
+                        h.state().names[objects[0]]
+                    ))
+                    .rect();
+                assert_eq!(advanced_child.left(), child.left());
+                for order in [false, true] {
+                    h.state_mut().view_tools.thread_order = order;
+                    h.run_steps(3);
+                    for (start, end) in h
+                        .query_all_by_label_contains("Start command:")
+                        .zip(h.query_all_by_label_contains("End command:"))
+                    {
+                        let (start, end) = (start.rect(), end.rect());
+                        assert_eq!(start.center().y, end.center().y);
+                        assert!(start.right() <= end.left());
+                        assert!((end.right() - (width - 8.0)).abs() < 0.1);
+                    }
                 }
             }
         }
