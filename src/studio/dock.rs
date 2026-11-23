@@ -3954,17 +3954,17 @@ impl Studio {
             } else {
                 name.clone()
             };
-            let preview_space = if advanced { 20.0 } else { 0.0 };
-            if advanced {
+            let preview_space = if singleton { 0.0 } else { 26.0 };
+            if !singleton {
                 let preview = Rect::from_center_size(
-                    Pos2::new(sw.right() + 12.0, rect.center().y),
-                    Vec2::splat(14.0),
+                    Pos2::new(sw.right() + 14.0, rect.center().y),
+                    Vec2::splat(22.0),
                 );
-                painter.rect_stroke(
+                crate::shape_thumbnail::paint(
+                    painter,
                     preview,
-                    2.0,
-                    Stroke::new(1.0, p.control_border),
-                    egui::StrokeKind::Inside,
+                    &self.thread_preview_shapes(&objects),
+                    true,
                 );
             }
             let label_rect = Rect::from_min_max(
@@ -4087,8 +4087,13 @@ impl Studio {
                             Pos2::new(object_row.right() - 48.0 - spacing, object_row.top()),
                             object_row.max,
                         );
+                        let preview = Rect::from_center_size(
+                            Pos2::new(object_row.left() + 10.0, object_row.center().y),
+                            Vec2::splat(20.0),
+                        );
+                        crate::shape_thumbnail::paint(ui.painter(), preview, &[shape], true);
                         let name_rect = Rect::from_min_max(
-                            object_row.min,
+                            Pos2::new(object_row.left() + 24.0, object_row.top()),
                             Pos2::new(commands.left() - spacing, object_row.bottom()),
                         );
                         ui.scope_builder(egui::UiBuilder::new().max_rect(name_rect), |ui| {

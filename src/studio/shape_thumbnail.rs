@@ -27,7 +27,7 @@ fn paths(shape: &Shape) -> impl Iterator<Item = (&[P], bool)> {
 
 /// Pure projection shared by individual and composite previews. Hidden filtering is
 /// explicit: a hidden object still has an individual preview in Layers.
-fn project(shapes: &[&Shape], rect: Rect, skip_hidden: bool) -> Vec<egui::Shape> {
+pub(crate) fn project(shapes: &[&Shape], rect: Rect, skip_hidden: bool) -> Vec<egui::Shape> {
     let visible = || {
         shapes
             .iter()

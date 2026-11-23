@@ -431,7 +431,7 @@ impl Studio {
     pub fn design_threads(&self) -> Vec<([u8; 3], Vec<usize>, usize)> {
         let mut out: Vec<([u8; 3], Vec<usize>, usize)> = Vec::new();
         for (i, s) in self.doc.shapes.iter().enumerate() {
-            if s.params.kind == Some(Kind::Skip) {
+            if s.params.hidden() || s.params.kind == Some(Kind::Skip) {
                 continue;
             }
             let n = self.design.per_shape.get(i).copied().unwrap_or(0);
@@ -464,6 +464,30 @@ impl Studio {
         changed
     }
 
+    /// Painter-only: previews add no pointer or keyboard targets.
+    fn thread_preview(&self, ui: &mut egui::Ui, objects: &[usize], size: f32) {
+        let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
+        let shapes = self.thread_preview_shapes(objects);
+        crate::shape_thumbnail::paint(ui.painter(), rect, &shapes, true);
+    }
+
+    pub(crate) fn thread_preview_shapes(&self, objects: &[usize]) -> Vec<&zigzag::svg::Shape> {
+        let mut unique = Vec::new();
+        objects
+            .iter()
+            .filter_map(|&i| {
+                if unique.contains(&i) {
+                    return None;
+                }
+                unique.push(i);
+                self.doc
+                    .shapes
+                    .get(i)
+                    .filter(|s| !s.params.hidden() && s.params.kind != Some(Kind::Skip))
+            })
+            .collect()
+    }
+
     /// One summary per object RGB, never per planned pass or Stop boundary.
     fn simple_threads(&mut self, ui: &mut egui::Ui) {
         let threads = self.design_threads();
@@ -472,6 +496,33 @@ impl Studio {
             return;
         }
         let selected = self.sel_indices();
+        // Follow a recolored object to its new RGB; merged colors keep either open parent.
+        let history_id = ui.make_persistent_id("simple-thread-color-history");
+        let previous = ui
+            .ctx()
+            .data_mut(|d| d.get_temp::<Vec<(usize, [u8; 3])>>(history_id))
+            .unwrap_or_default();
+        let current: Vec<_> = threads
+            .iter()
+            .flat_map(|(color, objects, _)| {
+                objects.iter().map(|&i| (self.doc.shapes[i].uid, *color))
+            })
+            .collect();
+        for &(uid, color) in &current {
+            if let Some(&(_, old)) = previous
+                .iter()
+                .find(|(id, old)| *id == uid && *old != color)
+            {
+                let old_id = egui::Id::unique(("simple-thread-expanded", old));
+                let new_id = egui::Id::unique(("simple-thread-expanded", color));
+                ui.ctx().data_mut(|d| {
+                    if d.get_persisted::<bool>(old_id).unwrap_or(false) {
+                        d.insert_persisted(new_id, true);
+                    }
+                });
+            }
+        }
+        ui.ctx().data_mut(|d| d.insert_temp(history_id, current));
         egui::ScrollArea::vertical()
             .id_salt("simple-thread-colors")
             .max_height(crate::theme::ROW_H * 10.0)
@@ -479,7 +530,21 @@ impl Studio {
             .show(ui, |ui| {
                 for (color, objects, stitches) in threads {
                     ui.push_id(("simple-thread", color), |ui| {
+                        let id = egui::Id::unique(("simple-thread-expanded", color));
+                        let mut expanded = ui.ctx().data_mut(|d| d.get_persisted::<bool>(id)).unwrap_or(false);
                         ui.horizontal(|ui| {
+                            let toggle = crate::theme::icon_button(
+                                ui,
+                                if expanded { crate::icons::Icon::ChevronDown } else { crate::icons::Icon::ChevronRight },
+                                &format!("Toggle objects for RGB {color:?}"),
+                                false,
+                                20.0,
+                            );
+                            if toggle.clicked() {
+                                expanded = !expanded;
+                                ui.ctx().data_mut(|d| d.insert_persisted(id, expanded));
+                            }
+                            self.thread_preview(ui, &objects, 22.0);
                             let response = swatch(ui, color, crate::theme::LIST_SWATCH, false);
                             response.widget_info(|| egui::WidgetInfo::labeled(
                                 egui::Role::Button, true, format!("Thread color RGB {color:?}"),
@@ -506,6 +571,22 @@ impl Studio {
                             }
                             caption(ui, count);
                         });
+                        if expanded {
+                            for &i in &objects {
+                                ui.push_id(self.doc.shapes[i].uid, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.add_space(18.0);
+                                        self.thread_preview(ui, &[i], 20.0);
+                                        let name = self.names.get(i).cloned().unwrap_or_else(|| format!("Object {}", i + 1));
+                                        let response = ui.add_sized([ui.available_width(), 24.0], egui::Button::selectable(selected.contains(&i), &name).truncate());
+                                        response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected.contains(&i), format!("Select thread object {name}")));
+                                        if response.on_hover_text(&name).clicked() {
+                                            self.set_selection(&[i]);
+                                        }
+                                    });
+                                });
+                            }
+                        }
                     });
                 }
             });
@@ -630,6 +711,86 @@ mod tests {
             );
         h.run_steps(4);
         h
+    }
+
+    #[test]
+    fn simple_disclosure_keeps_selection_and_survives_stop_replan() {
+        let mut h = studio();
+        h.state_mut().view_tools.thread_order = false;
+        h.run_steps(3);
+        let color = h.state().doc.shapes[0].color;
+        let toggle = format!("Toggle objects for RGB {color:?}");
+        h.state_mut().set_selection(&[]);
+        h.get_by_label(&toggle).focus();
+        h.key_press(egui::Key::Space);
+        h.run_steps(3);
+        assert!(h.state().sel_indices().is_empty());
+        let name = format!("Select thread object {}", h.state().names[0]);
+        h.get_by_label(&name).click();
+        h.run_steps(2);
+        assert_eq!(h.state().sel_indices(), vec![0]);
+        let blocks = h.state().design.blocks.len();
+        h.state_mut().doc.shapes[0]
+            .params
+            .set_end_command(zigzag::params::EndCommand::Stop);
+        h.state_mut().replan();
+        h.run_steps(4);
+        assert!(h.query_by_label(&name).is_some());
+        assert!(h.state().design.blocks.len() <= blocks + 1);
+        let replacement = [10, 20, 30];
+        for shape in &mut h.state_mut().doc.shapes {
+            if shape.color == color {
+                shape.color = replacement;
+            }
+        }
+        h.run_steps(3);
+        assert!(h.query_by_label(&name).is_some());
+        h.get_by_label(&format!("Toggle objects for RGB {replacement:?}"))
+            .click();
+        h.run_steps(2);
+        assert!(h.query_by_label(&name).is_none());
+    }
+
+    #[test]
+    fn previews_use_exact_visible_members_and_shared_projection() {
+        let mut h = studio();
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0L10 0" stroke="#aa0000"/><path d="M20 0L25 10" stroke="#aa0000"/><path d="M0 20L10 20" stroke="#00aa00"/><path d="M30 0L40 10" stroke="#aa0000"/></svg>"##;
+        h.state_mut()
+            .set_document(zigzag::document::Document::from_svg(svg, "previews", None).unwrap());
+        h.run_steps(5);
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::splat(22.0));
+        let s = h.state();
+        let all = s.design_threads();
+        assert_eq!(all[0].1, vec![0, 1, 3]);
+        let project = |indices: &[usize]| {
+            crate::shape_thumbnail::project(&s.thread_preview_shapes(indices), rect, true)
+        };
+        assert_eq!(project(&all[0].1).len(), 3);
+        assert_eq!(project(&[0, 0, 1]).len(), 2);
+        assert_eq!(project(&[3]).len(), 1);
+        let groups = color_runs(&s.design.blocks, &s.design.block_shapes, true);
+        assert_eq!(
+            groups.iter().map(|g| g.objects.clone()).collect::<Vec<_>>(),
+            vec![vec![0, 1], vec![2], vec![3]]
+        );
+        for group in groups {
+            assert_eq!(
+                project(&group.objects),
+                crate::shape_thumbnail::project(
+                    &group
+                        .objects
+                        .iter()
+                        .map(|&i| &s.doc.shapes[i])
+                        .collect::<Vec<_>>(),
+                    rect,
+                    true
+                )
+            );
+        }
+        h.state_mut().doc.shapes[1].params.hide = Some(true);
+        h.state_mut().doc.shapes[3].params.kind = Some(Kind::Skip);
+        assert_eq!(h.state().thread_preview_shapes(&[0, 1, 2, 3]).len(), 2);
+        assert_eq!(h.state().design_threads()[0].1, vec![0]);
     }
 
     #[test]
@@ -947,6 +1108,38 @@ mod tests {
         h.run_steps(2);
         assert_eq!(h.state().sel_indices(), all);
         assert!(h.state().picker.is_some());
+    }
+
+    #[test]
+    fn thumbnail_rows_fit_narrow_docks_in_both_themes() {
+        for width in [200.0, 260.0] {
+            for dark in [false, true] {
+                let mut frame = studio();
+                frame.state_mut().view_tools.thread_order = false;
+                let mut h = Harness::builder()
+                    .with_size(Vec2::new(width, 900.0))
+                    .build_ui_state(
+                        move |ui, s: &mut &mut Studio| {
+                            ui.ctx().set_visuals(if dark {
+                                egui::Visuals::dark()
+                            } else {
+                                egui::Visuals::light()
+                            });
+                            s.threads_body(ui);
+                        },
+                        frame.state_mut(),
+                    );
+                h.run_steps(3);
+                for node in h.query_all_by_label_contains("Thread color RGB") {
+                    assert!(node.rect().right() <= width);
+                }
+                h.state_mut().view_tools.thread_advanced = true;
+                h.run_steps(3);
+                for node in h.query_all_by_label_contains("End command:") {
+                    assert!(node.rect().right() <= width);
+                }
+            }
+        }
     }
 
     #[test]
